@@ -8,10 +8,12 @@ from __future__ import annotations
 import copy
 import html
 import itertools
+import math
 import os
 import re
 import json
 import sys
+import time
 import traceback
 from datetime import datetime
 from pathlib import Path
@@ -526,14 +528,16 @@ def _slider_float_with_exact(
 
 SCENARIO_SUBVENTION_BPS = [0, 25, 50, 75, 100, 125, 150, 200, 250, 300]
 
-# Multi-lever optimization grids (Cartesian product; capped via MAX_MULTI_LEVER_SCENARIOS)
+# Multi-lever demo reference grids (documentation / wizard hints only)
 MULTI_LEVER_RATE_LEVELS = [0, 25, 50, 75, 100, 150, 200]
 MULTI_LEVER_CUSTOMER_CASH = [0, 500, 1000, 1500, 2000, 2500, 3000]
 MULTI_LEVER_DEALER_CASH = [0, 500, 1000, 1500]
 MULTI_LEVER_LOYALTY_CASH = [0, 500, 1000]
 MULTI_LEVER_CONQUEST_CASH = [0, 500, 1000]
 MULTI_LEVER_LOAN_TERM = [48, 60, 72]
-MAX_MULTI_LEVER_SCENARIOS = 3500
+
+# Full enumeration when the configured grid is up to this many combinations (no random sampling).
+MAX_FULL_ENUMERATION = 25000
 
 LOAN_TERMS = [36, 48, 60, 72, 84]
 
@@ -981,6 +985,109 @@ def EXEC_THEME_CSS() -> str:
         line-height: 1.1;
         margin: 0;
     }
+
+    .exec-hero-metrics-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 0.75rem;
+        margin: 0.75rem 0 1.25rem 0;
+    }
+    @media (max-width: 1100px) {
+        .exec-hero-metrics-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (max-width: 560px) {
+        .exec-hero-metrics-grid { grid-template-columns: 1fr; }
+    }
+    .exec-hero-metric-tile {
+        background: #f8fafc;
+        border: 1px solid #e4e4e7;
+        border-radius: 10px;
+        padding: 1rem 1.15rem;
+        box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
+    }
+    .exec-hero-metric-tile.exec-hero-metric-rec {
+        background: #ecfdf5;
+        border-color: #bbf7d0;
+    }
+    .exec-hero-metric-tile .ehm-label {
+        color: #52525b;
+        font-size: 0.72rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        margin: 0 0 0.35rem 0;
+    }
+    .exec-hero-metric-tile .ehm-value {
+        color: #18181b;
+        font-size: 1.35rem;
+        font-weight: 700;
+        margin: 0;
+        line-height: 1.2;
+    }
+    .exec-hero-metric-tile .ehm-sub {
+        color: #64748b;
+        font-size: 0.78rem;
+        margin: 0.35rem 0 0 0;
+        line-height: 1.35;
+    }
+
+    .exec-summary-callout {
+        background: #ffffff;
+        border: 1px solid #e4e4e7;
+        border-left: 4px solid #14a67f;
+        border-radius: 10px;
+        padding: 1.1rem 1.35rem;
+        margin: 0 0 1.25rem 0;
+        box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
+    }
+    .exec-summary-callout p {
+        margin: 0;
+        color: #334155;
+        font-size: 1.02rem;
+        line-height: 1.55;
+    }
+
+    .exec-scenario-compare-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 0.85rem;
+        margin: 0.5rem 0 1rem 0;
+    }
+    @media (max-width: 900px) {
+        .exec-scenario-compare-grid { grid-template-columns: 1fr; }
+    }
+    .exec-scenario-compare-card {
+        background: #ffffff;
+        border: 1px solid #e4e4e7;
+        border-radius: 10px;
+        padding: 1rem 1.2rem;
+        box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
+    }
+    .exec-scenario-compare-card.exec-scen-rec {
+        background: #ecfdf5;
+        border-color: #bbf7d0;
+    }
+    .exec-scenario-compare-card .esc-title {
+        font-size: 0.78rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.03em;
+        color: #475569;
+        margin: 0 0 0.65rem 0;
+    }
+    .exec-scenario-compare-card .esc-row {
+        display: flex;
+        justify-content: space-between;
+        gap: 0.5rem;
+        font-size: 0.88rem;
+        padding: 0.28rem 0;
+        border-bottom: 1px solid #f1f5f9;
+        color: #334155;
+    }
+    .exec-scenario-compare-card .esc-row:last-child { border-bottom: none; }
+    .exec-scenario-compare-card .esc-k { color: #64748b; }
+    .exec-scenario-compare-card .esc-v { font-weight: 600; color: #0f172a; text-align: right; }
+
     /* Four-up scenario snapshot cards — CSS Grid keeps equal height per row */
     .exec-subcard-grid {
         display: grid;
@@ -1295,8 +1402,7 @@ def get_sample_defaults() -> dict:
 
 def _deployment_startup_gate() -> None:
     """
-    Railway-oriented checks: artifact paths, eager load of model/schema for health,
-    and diagnostics (no changes to ML or optimization logic).
+    Railway-oriented checks: required artifact paths and eager load of model/schema at startup.
     """
     required_files = ["model_pipeline.pkl", "feature_schema.json"]
     missing = [f for f in required_files if not (ROOT / f).is_file()]
@@ -1305,13 +1411,8 @@ def _deployment_startup_gate() -> None:
         st.error(f"Missing required deployment files: {missing}")
         st.stop()
 
-    pipeline_loaded = False
-    schema_loaded = False
-    feature_count: int | None = None
-
     try:
         load_model()
-        pipeline_loaded = True
     except Exception as e:
         st.error(f"Failed to load ML pipeline: {e}")
         with st.expander("Traceback"):
@@ -1319,48 +1420,12 @@ def _deployment_startup_gate() -> None:
         st.stop()
 
     try:
-        sch = get_feature_schema()
-        schema_loaded = True
-        rc = sch.get("required_columns")
-        if isinstance(rc, list):
-            feature_count = len(rc)
+        get_feature_schema()
     except ValueError as e:
         st.error(str(e))
         with st.expander("Traceback"):
             st.code(traceback.format_exc())
         st.stop()
-
-    with st.expander("Deployment Health", expanded=False):
-        st.write("Python version:", sys.version)
-        st.write("Working directory:", os.getcwd())
-        try:
-            st.write("Files (cwd):", sorted(os.listdir("."))[:100])
-        except OSError as exc:
-            st.write("Files (cwd): unreadable", str(exc))
-        st.write("App root:", str(ROOT))
-        st.write("model_pipeline.pkl exists:", (ROOT / "model_pipeline.pkl").is_file())
-        st.write("feature_schema.json exists:", (ROOT / "feature_schema.json").is_file())
-        st.write(
-            "Environment:",
-            os.environ.get("RAILWAY_ENVIRONMENT")
-            or os.environ.get("RAILWAY_PROJECT_NAME")
-            or os.environ.get("ENV")
-            or "local",
-        )
-        try:
-            st.write("Streamlit:", getattr(st, "__version__", "unknown"))
-        except Exception:
-            st.write("Streamlit: unknown")
-        try:
-            import sklearn
-
-            st.write("scikit-learn:", sklearn.__version__)
-        except Exception as exc:
-            st.write("scikit-learn:", f"(import failed: {exc})")
-        st.write("Model loaded:", pipeline_loaded)
-        st.write("Schema loaded:", schema_loaded)
-        st.write("Feature count:", feature_count if feature_count is not None else "—")
-        st.write("Inference row count:", 1)
 
 
 # ---------------------------------------------------------------------------
@@ -1834,91 +1899,145 @@ def _cash_steps_500(max_usd: float) -> list[float]:
     return vals
 
 
-def select_recommended_constrained(
-    enriched_df: pd.DataFrame,
-    expected_unit_margin: float,
-    constraints: dict[str, Any],
-) -> tuple[pd.Series, pd.DataFrame, bool]:
-    """
-    Choose best expected_value among feasible scenarios; fallback to unconstrained best EV.
-
-    Returns (recommended_row, feasible_df, relaxed_constraints_fallback).
-
-    Feasibility requires:
-      - estimated_support_cost <= max_total_support_budget
-      - expected_unit_margin - support_cost >= min_acceptable_remaining_margin
-      - conversion_lift_vs_baseline >= min_conversion_lift_vs_no_support
-        (full no-incentive baseline at the scenario loan term)
-
-    Tie-break: among scenarios within 5% of feasible max EV, prefer lower estimated support cost.
-    """
-    df = enriched_df.copy()
-    m = float(expected_unit_margin)
-    bud = float(constraints["max_total_support_budget"])
-    min_rem = float(constraints["min_acceptable_remaining_margin"])
-    min_lift = float(constraints["min_conversion_lift_vs_no_support"])
-    if "conversion_lift_vs_baseline" not in df.columns and "conversion_lift_vs_no_support" in df.columns:
-        df["conversion_lift_vs_baseline"] = df["conversion_lift_vs_no_support"].astype(float)
-    if "remaining_margin_estimate" not in df.columns:
-        df["remaining_margin_estimate"] = m - df["estimated_support_cost"].astype(float)
-
-    feasible = df[
-        (df["estimated_support_cost"].astype(float) <= bud + 1e-6)
-        & (df["remaining_margin_estimate"].astype(float) >= min_rem - 1e-6)
-        & (
-            df["conversion_lift_vs_baseline"].astype(float)
-            >= min_lift - 1e-9
-        )
-    ].copy()
-
-    relaxed = feasible.empty
-    if relaxed:
-        chosen = select_recommended_expected_value(df)
-        return chosen, feasible, True
-
-    max_ev = float(feasible["expected_value"].max())
-    pool = feasible[feasible["expected_value"] >= max_ev * 0.95].copy()
-    if pool.empty:
-        pool = feasible
-    chosen = pool.sort_values(
-        ["estimated_support_cost", "dealer_rate_support_level"],
-        ascending=[True, True],
-    ).iloc[0]
-    return chosen, feasible, False
+def _rate_support_grid_fixed(mx: int, step: int) -> list[int]:
+    step = max(1, int(step))
+    return [r for r in range(0, max(0, int(mx)) + 1, step)]
 
 
-def run_constraint_based_offer_scenarios(
-    base_inputs: dict[str, Any],
+def _cash_steps_fixed(max_usd: float, step: float) -> list[float]:
+    step = max(1.0, float(step))
+    mx = float(max_usd)
+    if mx <= 0:
+        return [0.0]
+    vals: list[float] = []
+    v = 0.0
+    while v <= mx + 1e-9:
+        vals.append(round(v, 2))
+        v += step
+    return vals
+
+
+def _fine_optimization_grids(constraints: dict[str, Any]) -> tuple:
+    return (
+        _rate_support_grid(int(constraints["max_rate_support"])),
+        _cash_steps_500(float(constraints["max_oem_customer_cash"])),
+        _cash_steps_500(float(constraints["max_dealer_cash"])),
+        _cash_steps_500(float(constraints["max_loyalty_cash"]))
+        if constraints["allow_loyalty"]
+        else [0.0],
+        _cash_steps_500(float(constraints["max_conquest_cash"]))
+        if constraints["allow_conquest"]
+        else [0.0],
+        [int(x) for x in constraints["allowed_loan_terms"]],
+    )
+
+
+def _coarse_optimization_grids(constraints: dict[str, Any]) -> tuple:
+    return (
+        _rate_support_grid_fixed(int(constraints["max_rate_support"]), 50),
+        _cash_steps_fixed(float(constraints["max_oem_customer_cash"]), 1000.0),
+        _cash_steps_fixed(float(constraints["max_dealer_cash"]), 1000.0),
+        _cash_steps_fixed(float(constraints["max_loyalty_cash"]), 1000.0)
+        if constraints["allow_loyalty"]
+        else [0.0],
+        _cash_steps_fixed(float(constraints["max_conquest_cash"]), 1000.0)
+        if constraints["allow_conquest"]
+        else [0.0],
+        [int(x) for x in constraints["allowed_loan_terms"]],
+    )
+
+
+def _combo_tuple_from_parts(
+    sup: float | int,
+    cc: float,
+    dc: float,
+    lc: float,
+    cq: float,
+    term: int,
+) -> tuple[Any, ...]:
+    return (
+        int(sup),
+        round(float(cc), 2),
+        round(float(dc), 2),
+        round(float(lc), 2),
+        round(float(cq), 2),
+        int(term),
+    )
+
+
+def _series_to_combo_tuple(row: pd.Series) -> tuple[Any, ...]:
+    return _combo_tuple_from_parts(
+        row["dealer_rate_support_level"],
+        float(row["customer_cash"]),
+        float(row["dealer_cash"]),
+        float(row["loyalty_cash"]),
+        float(row["conquest_cash"]),
+        int(row["loan_term"]),
+    )
+
+
+def _refined_neighbor_tuples(
+    row: pd.Series,
     optimization_constraints: dict[str, Any],
+) -> set[tuple[Any, ...]]:
+    mx_rate = int(optimization_constraints["max_rate_support"])
+    max_cc = float(optimization_constraints["max_oem_customer_cash"])
+    max_dc = float(optimization_constraints["max_dealer_cash"])
+    allow_loyalty = optimization_constraints["allow_loyalty"]
+    max_loy = float(optimization_constraints["max_loyalty_cash"]) if allow_loyalty else 0.0
+    allow_conquest = optimization_constraints["allow_conquest"]
+    max_cq = float(optimization_constraints["max_conquest_cash"]) if allow_conquest else 0.0
+    terms = sorted(int(x) for x in optimization_constraints["allowed_loan_terms"])
+
+    sup0 = int(row["dealer_rate_support_level"])
+    cc0 = float(row["customer_cash"])
+    dc0 = float(row["dealer_cash"])
+    lc0 = float(row["loyalty_cash"])
+    cq0 = float(row["conquest_cash"])
+    t0 = int(row["loan_term"])
+
+    def clamp_cash(x: float, mxv: float) -> float:
+        return round(max(0.0, min(float(mxv), x)), 2)
+
+    term_neighbors: set[int] = {t0}
+    if t0 in terms:
+        ti = terms.index(t0)
+        if ti > 0:
+            term_neighbors.add(terms[ti - 1])
+        if ti < len(terms) - 1:
+            term_neighbors.add(terms[ti + 1])
+
+    loyalty_ds = (-500, 0, 500) if allow_loyalty else (0,)
+    conquest_ds = (-500, 0, 500) if allow_conquest else (0,)
+
+    out: set[tuple[Any, ...]] = set()
+    for ds in (-25, 0, 25):
+        sup = sup0 + ds
+        if sup < 0 or sup > mx_rate:
+            continue
+        for dcc in (-500, 0, 500):
+            cc = clamp_cash(cc0 + dcc, max_cc)
+            for ddc in (-500, 0, 500):
+                dc = clamp_cash(dc0 + ddc, max_dc)
+                for dll in loyalty_ds:
+                    lc = clamp_cash(lc0 + dll, max_loy) if allow_loyalty else 0.0
+                    for dcq in conquest_ds:
+                        cq = clamp_cash(cq0 + dcq, max_cq) if allow_conquest else 0.0
+                        for term in term_neighbors:
+                            out.add(_combo_tuple_from_parts(sup, cc, dc, lc, cq, term))
+    return out
+
+
+def _score_offer_combination_list(
+    base_inputs: dict[str, Any],
+    combos: list[tuple[Any, ...]],
     pipeline: Any,
     schema: dict[str, Any],
     sample_defaults: dict[str, Any],
     cost_multiplier: float,
-) -> tuple[pd.DataFrame | None, str | None]:
-    """
-    Cartesian search within user-defined bounds; computes EV, lifts vs no-support baseline,
-    and remaining margin versus expected unit gross.
-    """
-    grids = (
-        _rate_support_grid(int(optimization_constraints["max_rate_support"])),
-        _cash_steps_500(float(optimization_constraints["max_oem_customer_cash"])),
-        _cash_steps_500(float(optimization_constraints["max_dealer_cash"])),
-        _cash_steps_500(float(optimization_constraints["max_loyalty_cash"]))
-        if optimization_constraints["allow_loyalty"]
-        else [0.0],
-        _cash_steps_500(float(optimization_constraints["max_conquest_cash"]))
-        if optimization_constraints["allow_conquest"]
-        else [0.0],
-        [int(x) for x in optimization_constraints["allowed_loan_terms"]],
-    )
-    combos = list(itertools.product(*grids))
-    n_combo = len(combos)
-    if n_combo > MAX_MULTI_LEVER_SCENARIOS:
-        rng = np.random.default_rng(42)
-        pick = rng.choice(n_combo, size=MAX_MULTI_LEVER_SCENARIOS, replace=False)
-        combos = [combos[int(i)] for i in pick]
-
-    # P(convert) with zero incentives at each loan term (true no-support baseline).
+    *,
+    idx_offset: int = 0,
+) -> tuple[list[dict[str, Any]] | None, str | None]:
     term_baseline_cache: dict[int, float] = {}
 
     def get_p_no_incentive_package(term: int) -> float:
@@ -1983,7 +2102,9 @@ def run_constraint_based_offer_scenarios(
             return None, err or "Prediction failed in multi-lever sweep."
 
         p_pkg0 = get_p_no_incentive_package(int(term))
-        p_rate0 = get_p_zero_rate_same_cash(float(cc), float(dc), float(lc), float(cq), int(term))
+        p_rate0 = get_p_zero_rate_same_cash(
+            float(cc), float(dc), float(lc), float(cq), int(term)
+        )
         lift_vs_baseline = float(p) - float(p_pkg0)
         lift_marginal_rate = float(p) - float(p_rate0)
         la = float(scen["loan_amount"])
@@ -2000,7 +2121,7 @@ def run_constraint_based_offer_scenarios(
 
         rows.append(
             {
-                "scenario_idx": i,
+                "scenario_idx": idx_offset + i,
                 "dealer_rate_support_level": int(sup),
                 "rate_support_tier": rate_support_tier_label(int(sup)),
                 "scenario_dealer_apr": float(rm["dealer_apr"]),
@@ -2025,7 +2146,167 @@ def run_constraint_based_offer_scenarios(
             }
         )
 
-    return pd.DataFrame(rows), None
+    return rows, None
+
+
+def select_recommended_constrained(
+    enriched_df: pd.DataFrame,
+    expected_unit_margin: float,
+    constraints: dict[str, Any],
+) -> tuple[pd.Series, pd.DataFrame, bool]:
+    """
+    Rank feasible scenarios by net deal outcome (`expected_value`), apply tie-break.
+
+    Returns (recommended_row, feasible_df, relaxed_constraints_fallback).
+
+    Feasibility requires:
+      - estimated_support_cost <= max_total_support_budget
+      - expected_unit_margin - support_cost >= min_acceptable_remaining_margin
+      - conversion_lift_vs_baseline >= min_conversion_lift_vs_no_support
+        (full no-incentive baseline at the scenario loan term)
+
+    Tie-break: among scenarios within 5% of feasible max net deal outcome, prefer lower support cost.
+    """
+    df = enriched_df.copy()
+    m = float(expected_unit_margin)
+    bud = float(constraints["max_total_support_budget"])
+    min_rem = float(constraints["min_acceptable_remaining_margin"])
+    min_lift = float(constraints["min_conversion_lift_vs_no_support"])
+    if "conversion_lift_vs_baseline" not in df.columns and "conversion_lift_vs_no_support" in df.columns:
+        df["conversion_lift_vs_baseline"] = df["conversion_lift_vs_no_support"].astype(float)
+    if "remaining_margin_estimate" not in df.columns:
+        df["remaining_margin_estimate"] = m - df["estimated_support_cost"].astype(float)
+
+    feasible = df[
+        (df["estimated_support_cost"].astype(float) <= bud + 1e-6)
+        & (df["remaining_margin_estimate"].astype(float) >= min_rem - 1e-6)
+        & (
+            df["conversion_lift_vs_baseline"].astype(float)
+            >= min_lift - 1e-9
+        )
+    ].copy()
+
+    relaxed = feasible.empty
+    if relaxed:
+        chosen = select_recommended_expected_value(df)
+        return chosen, feasible, True
+
+    max_ev = float(feasible["expected_value"].max())
+    pool = feasible[feasible["expected_value"] >= max_ev * 0.95].copy()
+    if pool.empty:
+        pool = feasible
+    chosen = pool.sort_values(
+        ["estimated_support_cost", "dealer_rate_support_level"],
+        ascending=[True, True],
+    ).iloc[0]
+    return chosen, feasible, False
+
+
+def run_constraint_based_offer_scenarios(
+    base_inputs: dict[str, Any],
+    optimization_constraints: dict[str, Any],
+    pipeline: Any,
+    schema: dict[str, Any],
+    sample_defaults: dict[str, Any],
+    cost_multiplier: float,
+) -> tuple[pd.DataFrame | None, str | None, dict[str, Any] | None]:
+    """
+    Search configured lever grids. Either evaluates the **full** fine grid (<= MAX_FULL_ENUMERATION
+    combinations) or runs a deterministic **coarse-to-fine** expansion — never random sampling.
+    """
+    t0 = time.perf_counter()
+    fine_grids = _fine_optimization_grids(optimization_constraints)
+    fine_combos = list(itertools.product(*fine_grids))
+    n_fine = len(fine_combos)
+
+    if n_fine <= MAX_FULL_ENUMERATION:
+        rows, err = _score_offer_combination_list(
+            base_inputs,
+            fine_combos,
+            pipeline,
+            schema,
+            sample_defaults,
+            cost_multiplier,
+            idx_offset=0,
+        )
+        if err or rows is None:
+            return None, err or "Prediction failed in multi-lever sweep.", None
+        df = pd.DataFrame(rows)
+        elapsed = time.perf_counter() - t0
+        meta: dict[str, Any] = {
+            "search_mode": "Full grid search",
+            "total_grid_scenarios": n_fine,
+            "scenarios_evaluated": len(df),
+            "runtime_seconds": elapsed,
+            "coarse_evaluated": len(df),
+            "refined_evaluated": 0,
+            "coarse_grid_truncated": False,
+        }
+        return df, None, meta
+
+    coarse_grids = _coarse_optimization_grids(optimization_constraints)
+    coarse_combos = sorted(itertools.product(*coarse_grids))
+    coarse_truncated = False
+    if len(coarse_combos) > MAX_FULL_ENUMERATION:
+        stride = math.ceil(len(coarse_combos) / MAX_FULL_ENUMERATION)
+        coarse_combos = coarse_combos[::stride]
+        coarse_truncated = True
+
+    rows_c, err = _score_offer_combination_list(
+        base_inputs,
+        list(coarse_combos),
+        pipeline,
+        schema,
+        sample_defaults,
+        cost_multiplier,
+        idx_offset=0,
+    )
+    if err or rows_c is None:
+        return None, err or "Prediction failed in coarse optimization.", None
+
+    df_c = pd.DataFrame(rows_c)
+    top_n = min(25, len(df_c))
+    top_block = df_c.nlargest(top_n, "expected_value")
+
+    coarse_keys: set[tuple[Any, ...]] = {_series_to_combo_tuple(r) for _, r in df_c.iterrows()}
+
+    refined_set: set[tuple[Any, ...]] = set()
+    for _, row in top_block.iterrows():
+        for tup in _refined_neighbor_tuples(row, optimization_constraints):
+            if tup not in coarse_keys:
+                refined_set.add(tup)
+
+    refined_combos = sorted(refined_set)
+    rows_r: list[dict[str, Any]] = []
+    if refined_combos:
+        rows_r, err_r = _score_offer_combination_list(
+            base_inputs,
+            refined_combos,
+            pipeline,
+            schema,
+            sample_defaults,
+            cost_multiplier,
+            idx_offset=len(rows_c),
+        )
+        if err_r or rows_r is None:
+            return None, err_r or "Prediction failed in refined optimization.", None
+
+    all_rows = rows_c + rows_r
+    for i, row in enumerate(all_rows):
+        row["scenario_idx"] = i
+
+    df = pd.DataFrame(all_rows)
+    elapsed = time.perf_counter() - t0
+    meta = {
+        "search_mode": "Coarse-to-fine search",
+        "total_grid_scenarios": n_fine,
+        "scenarios_evaluated": len(df),
+        "coarse_evaluated": len(rows_c),
+        "refined_evaluated": len(rows_r),
+        "coarse_grid_truncated": coarse_truncated,
+        "runtime_seconds": elapsed,
+    }
+    return df, None, meta
 
 
 def scenario_rows_match(rec: pd.Series, df: pd.DataFrame) -> pd.Series:
@@ -2975,6 +3256,44 @@ def EXEC_WIZARD_DEMO_UI_CSS() -> str:
         padding: 0 !important;
         background: transparent !important;
     }
+
+    /*
+     * Offer analytics chart pair + popovers: the footer-row rule above matches any row with
+     * [data-testid="stButton"] (includes ? popovers), forcing align-items:center and stripping
+     * borders from bordered containers — cards stay different heights and tops drift. Anchor wins.
+     */
+    .main div[data-testid="stHorizontalBlock"]:has(.exec-chart-pair-anchor) {
+        align-items: stretch !important;
+        align-content: stretch !important;
+        padding: 0 !important;
+        margin: 0 !important;
+    }
+    .main div[data-testid="stHorizontalBlock"]:has(.exec-chart-pair-anchor) [data-testid="column"] {
+        display: flex !important;
+        flex-direction: column !important;
+        align-items: stretch !important;
+        align-self: stretch !important;
+    }
+    .main div[data-testid="stHorizontalBlock"]:has(.exec-chart-pair-anchor)
+        [data-testid="column"]:has([data-testid="stVerticalBlockBorderWrapper"]) > div[data-testid="element-container"] {
+        flex: 1 1 auto !important;
+        display: flex !important;
+        flex-direction: column !important;
+        min-height: 0 !important;
+    }
+    .main div[data-testid="stHorizontalBlock"]:has(.exec-chart-pair-anchor)
+        [data-testid="stVerticalBlockBorderWrapper"] {
+        flex: 1 1 auto !important;
+        min-height: 0 !important;
+        height: 100% !important;
+        box-sizing: border-box !important;
+        border: 1px solid #E5E7EB !important;
+        border-radius: 14px !important;
+        box-shadow: 0 1px 2px rgba(17, 24, 39, 0.04) !important;
+        padding: 0.65rem 0.85rem 0.75rem 0.85rem !important;
+        margin-bottom: 0.65rem !important;
+        background: #FFFFFF !important;
+    }
 </style>
 """
 
@@ -3084,6 +3403,30 @@ def _help_plain_for_tooltip(
 def _hint(help_md: str) -> str:
     """Shorthand for inline HTML ? chip + hover popup (same as `_help_icon_html`)."""
     return _help_icon_html(help_md)
+
+
+def _hero_metric_label(label: str, help_md: str) -> str:
+    """Uppercase-style hero tile title + ? explanation."""
+    return (
+        f'<p class="ehm-label" style="display:flex;align-items:center;gap:0.3rem;flex-wrap:wrap;'
+        f'margin:0 0 0.25rem 0;">'
+        f"{html.escape(label)}{_hint(help_md)}</p>"
+    )
+
+
+def _comparison_metric_row(label: str, value_html: str, help_md: str) -> str:
+    """One row in scenario comparison cards: label + ? , value."""
+    return (
+        f'<div class="esc-row">'
+        f'<span class="esc-k" style="display:flex;align-items:center;gap:0.28rem;flex-wrap:wrap;">'
+        f"{html.escape(label)}{_hint(help_md)}</span>"
+        f'<span class="esc-v">{value_html}</span></div>'
+    )
+
+
+def _labeled_hint(label: str, help_md: str) -> str:
+    """Bold label + ? chip for inline summary lines."""
+    return f"<b>{html.escape(label)}</b>{_hint(help_md)}"
 
 
 def _help_icon_html(help_md: str) -> str:
@@ -5390,73 +5733,32 @@ SIMULATOR_CHART_BLURBS = {
 }
 
 
-EXPLORATION_SCENARIO_CHART_HELP = {
-    "ev_rank": """### Plain English
-**Which incentive packages look best on an economic scorecard?**  
-Every dot is **one full package** the engine tried (rate support + cash + term, etc.). They’re sorted so the **strongest score is on the left**.
+OFFER_ANALYTICS_CHART_HELP = {
+    "incentive_ladder": """### Incentive ladder (primary chart)
 
----
+**Across** — Total modeled support for each searched package (**not** the customer’s monthly payment): APR buy-down estimate plus OEM/customer, dealer, loyalty, and conquest cash.
 
-### How to read it
-- **Left vs right** — **Rank by expected value.** Left = better modeled outcome among everything searched.
-- **Height ($)** — **Expected value:** roughly “conversion × margin − modeled support cost” for that package (your optimizer lens).
-- **Green dot** — The package flagged as **Recommended** under your constraints.
+**Up** — Predicted conversion probability for that package.
 
-### When you’d use it
-Quick scan: “Did anything obviously dominate before we read the fine print?”""",
-    "conversion_vs_cost": """### Plain English
-**Are we paying a lot of incentive dollars for a meaningful bump in close rate?**
+**Curve** — Points sorted by support cost; the line uses a **smoothed** conversion track so you can see the overall **shape** (steep gains vs flattening).
 
-Each dot is **one package**. You’re looking for attractive **trade-offs**, not a single magic number.
+**Green highlight** — The **recommended efficient offer** after your feasibility filters.
 
----
+**Use it to decide** where extra dollars stop buying meaningful close-rate improvement.""",
+    "support_breakdown": """### Support allocation
 
-### Dollars on this chart (**not monthly**)
+Shows **how dollars split** between APR subsidy vs stacked cash components for the **recommended** package.
 
-**Horizontal axis = estimated total modeled support ($)** for that package: one snapshot combining the **modeled rate-buy-down cost** (from loan amount × support tier × calibration) **plus** OEM/customer, dealer, loyalty, and conquest cash. It is **total incentive economics for that scenario**, **not** the customer’s monthly payment and **not** GAAP cost.
+Percentages are **shares of total modeled support** for that scenario.""",
+    "diminishing_returns": """### Diminishing returns
 
----
+**Across** — Total modeled support ($).
 
-### How to read it
-- **Across ($)** — Estimated **total** support for that scenario.
-- **Up** — Predicted conversion — chance the shopper accepts this structure.
-- **Green** — Recommended package.
+**Up** — **Incremental** predicted conversion vs the **previous cheaper** scenario along the sorted ladder (percentage points).
 
-### Pattern to look for
-Points **high** (good conversion) without drifting forever to the **right** (runaway spend). Upper-left is usually attractive.""",
-    "lift_vs_cost": """### Plain English
-**Is our spend actually buying uplift vs a plain desk quote with no incentives?**
+**Bands** — **Efficient** (green) through recommended spend; **moderate** diminishing returns (amber); **overspending** (red) where extra dollars buy little extra conversion.
 
-“Lift” means **extra conversion probability** vs **no APR subsidy and no stacked rebates** at the **same loan term** — apples-to-apples.
-
----
-
-### Dollars on this chart (**not monthly**)
-
-**Across** uses the same **estimated total support ($)** definition as **Conversion vs support cost**: modeled **one-shot** incentive dollars for that scenario (rate subsidy estimate + stacked cash), **not** a monthly figure.
-
----
-
-### How to read it
-- **Across ($)** — Estimated **total** support for that scenario.
-- **Up** — **Lift vs no-incentive baseline** — incremental conversion from adding incentives.
-
-### Pattern to look for
-Spend moving **right** should move you **up**. Flat lines mean money isn’t buying meaningful uplift.""",
-    "ev_vs_lift": """### Plain English
-**Who wins on full economics while still delivering real uplift over a no-incentive baseline?**
-
-Here **expected value** (scorecard) is on the vertical axis and **lift vs baseline** on the horizontal — so you see “profit-like score” vs “did incentives actually move the needle?”
-
----
-
-### How to read it
-- **Across** — **Lift vs no-incentive baseline** (same term).
-- **Up** — **Expected value ($)** — conversion × margin − modeled support (optimizer-style objective).
-- **Green** — Recommended scenario.
-
-### Pattern to look for
-Dots toward the **upper-right** combine strong uplift with strong economics; outliers low on lift are hard to justify.""",
+Early steep gains and later flattening indicate where to stop subsidizing.""",
 }
 
 
@@ -5796,78 +6098,175 @@ def chart_efficiency_by_support(
     )
 
 
-def format_multi_lever_display(df: pd.DataFrame) -> pd.DataFrame:
-    """Executive-facing columns for multi-lever scenario table."""
-    cols = {
-        "dealer_rate_support_level": "Support level",
-        "scenario_dealer_apr": "Dealer APR",
-        "scenario_dealer_monthly_payment": "Dealer payment",
-        "loan_term": "Loan term (mo)",
-        "scenario_loan_amount": "Loan amount",
-        "customer_cash": "Customer cash",
-        "dealer_cash": "Dealer cash",
-        "loyalty_cash": "Loyalty cash",
-        "conquest_cash": "Conquest cash",
-        "total_cash_rebate": "Total cash rebate",
-        "conversion_probability": "P(convert)",
-        "estimated_support_cost": "Est. support cost",
-        "conversion_lift_vs_baseline": "Lift vs no-incentive baseline",
-        "conversion_lift_vs_zero_apr_same_cash": "Lift from APR (same cash)",
-        "expected_value": "Expected value",
-        "efficiency_score": "Efficiency score",
-        "remaining_margin_estimate": "Remaining margin",
-    }
-    present = [c for c in cols if c in df.columns]
-    out = df[present].rename(columns={c: cols[c] for c in present})
-    return out
+def apr_support_cost_component(row: pd.Series, cost_multiplier: float) -> float:
+    la = float(row["scenario_loan_amount"])
+    sup = float(row["dealer_rate_support_level"])
+    return la * (sup / 10000.0) * float(cost_multiplier)
 
 
-def chart_expected_value_by_rank(
+def support_package_label(row: pd.Series) -> str:
+    bps = int(row["dealer_rate_support_level"])
+    parts: list[str] = [f"{bps} bps APR"]
+    cc = float(row["customer_cash"])
+    dc = float(row["dealer_cash"])
+    lc = float(row["loyalty_cash"])
+    cq = float(row["conquest_cash"])
+    if cc >= 1.0:
+        parts.append(f"OEM ${cc:,.0f}")
+    if dc >= 1.0:
+        parts.append(f"Dealer ${dc:,.0f}")
+    if lc >= 1.0:
+        parts.append(f"Loyalty ${lc:,.0f}")
+    if cq >= 1.0:
+        parts.append(f"Conquest ${cq:,.0f}")
+    parts.append(f"{int(row['loan_term'])} mo")
+    return " · ".join(parts)
+
+
+def overspend_support_hint_cost(df: pd.DataFrame, rec_cost: float) -> float | None:
+    """Support $ where marginal conversion gains along the cost ladder first taper (exec narrative)."""
+    d = df.sort_values("estimated_support_cost").reset_index(drop=True)
+    if len(d) < 6:
+        return None
+    d["marginal_pp"] = d["conversion_probability"].astype(float).diff() * 100.0
+    post = d[d["estimated_support_cost"].astype(float) > float(rec_cost) + 1e-6]
+    if post.empty:
+        return None
+    for _, r in post.iterrows():
+        mp = r["marginal_pp"]
+        if pd.notna(mp) and float(mp) < 0.12:
+            return float(r["estimated_support_cost"])
+    return float(d["estimated_support_cost"].quantile(0.82))
+
+
+def prepare_incentive_ladder_data(df: pd.DataFrame, rec: pd.Series) -> pd.DataFrame:
+    d = df.copy()
+    d["_is_rec"] = scenario_rows_match(rec, d).values
+    d = d.sort_values("estimated_support_cost").reset_index(drop=True)
+    d["conversion_pct"] = d["conversion_probability"].astype(float) * 100.0
+    n = len(d)
+    w = max(3, min(21, max(n // 25, 3)))
+    d["conversion_pct_smooth"] = d["conversion_pct"].rolling(
+        window=w, center=True, min_periods=1
+    ).mean()
+    d["rebate_package"] = d.apply(support_package_label, axis=1)
+    return d
+
+
+def chart_incentive_ladder(
     df: pd.DataFrame,
     rec: pd.Series,
+    cost_multiplier: float,
 ) -> alt.Chart:
-    """Rank scenarios by expected value (best first) for readability."""
-    d = df.sort_values("expected_value", ascending=False).reset_index(drop=True)
-    d["ev_rank"] = np.arange(len(d))
-    mask = scenario_rows_match(rec, d)
-    d["highlight"] = np.where(mask, "Recommended", "Other")
-    x_enc = alt.X(
-        "ev_rank:O",
-        title="Rank by expected value",
-        axis=alt.Axis(labelAngle=0, labels=False, tickCount=10),
-    )
-    y_enc = alt.Y("expected_value:Q", title="Expected value ($)")
-    base = alt.Chart(d).mark_circle(
-        size=52,
-        opacity=0.91,
-        stroke=_EXEC_CHART_POINT_MUTED_STROKE,
-        strokeWidth=0.5,
-    ).encode(
-        x=x_enc,
-        y=y_enc,
-        color=alt.Color(
-            "highlight:N",
-            scale=alt.Scale(
-                domain=["Other", "Recommended"],
-                range=[_EXEC_CHART_POINT_MUTED, _EXEC_CHART_REC_FILL],
+    _ = cost_multiplier  # reserved if future tooltip adds APR cost split
+    d = prepare_incentive_ladder_data(df, rec)
+    rec_df = d[d["_is_rec"]].head(1)
+    if rec_df.empty:
+        idx = (d["estimated_support_cost"] - float(rec["estimated_support_cost"])).abs().idxmin()
+        rec_df = d.loc[[idx]].assign(_is_rec=True)
+    line = (
+        alt.Chart(d)
+        .mark_line(
+            stroke=_EXEC_CHART_SERIES_LINE,
+            strokeWidth=3,
+            interpolate="monotone",
+            strokeCap="round",
+        )
+        .encode(
+            x=alt.X(
+                "estimated_support_cost:Q",
+                title="Total support cost ($)",
+                axis=alt.Axis(format=",.0f"),
             ),
-            legend=None,
-        ),
-        tooltip=[
-            alt.Tooltip("expected_value:Q", title="Expected value", format=",.0f"),
-            alt.Tooltip("conversion_probability:Q", title="P(convert)", format=".1%"),
-            alt.Tooltip("dealer_rate_support_level:N", title="Support level"),
-            alt.Tooltip("loan_term:N", title="Term"),
-        ],
+            y=alt.Y(
+                "conversion_pct_smooth:Q",
+                title="Predicted conversion (%)",
+                scale=alt.Scale(domain=[0, 100]),
+            ),
+        )
     )
+    pts_rec = (
+        alt.Chart(rec_df)
+        .mark_circle(
+            size=160,
+            color=_EXEC_CHART_REC_FILL,
+            stroke=_EXEC_CHART_REC_STROKE,
+            strokeWidth=2.5,
+            opacity=0.95,
+        )
+        .encode(
+            x="estimated_support_cost:Q",
+            y="conversion_pct:Q",
+            tooltip=[
+                alt.Tooltip("estimated_support_cost:Q", title="Total support ($)", format=",.0f"),
+                alt.Tooltip("conversion_pct:Q", title="Predicted conversion (%)", format=".1f"),
+                alt.Tooltip("scenario_dealer_apr:Q", title="Dealer APR (%)", format=".3f"),
+                alt.Tooltip(
+                    "scenario_dealer_monthly_payment:Q",
+                    title="Monthly payment ($)",
+                    format=",.0f",
+                ),
+                alt.Tooltip("rebate_package:N", title="Rebate package"),
+            ],
+        )
+    )
+    lbl = (
+        alt.Chart(rec_df)
+        .mark_text(
+            align="left",
+            dx=10,
+            dy=-12,
+            fontSize=11,
+            fontWeight=600,
+            color="#0f766e",
+        )
+        .encode(
+            x="estimated_support_cost:Q",
+            y="conversion_pct:Q",
+            text=alt.value("Recommended efficient offer"),
+        )
+    )
+    rest_df = d[~d["_is_rec"]]
+    if len(rest_df) > 0:
+        pts_muted = (
+            alt.Chart(rest_df)
+            .mark_circle(
+                size=36,
+                color=_EXEC_CHART_POINT_MUTED,
+                stroke=_EXEC_CHART_POINT_MUTED_STROKE,
+                strokeWidth=0.6,
+                opacity=0.45,
+            )
+            .encode(
+                x="estimated_support_cost:Q",
+                y="conversion_pct:Q",
+                tooltip=[
+                    alt.Tooltip("estimated_support_cost:Q", title="Total support ($)", format=",.0f"),
+                    alt.Tooltip("conversion_pct:Q", title="Predicted conversion (%)", format=".1f"),
+                    alt.Tooltip("scenario_dealer_apr:Q", title="Dealer APR (%)", format=".3f"),
+                    alt.Tooltip(
+                        "scenario_dealer_monthly_payment:Q",
+                        title="Monthly payment ($)",
+                        format=",.0f",
+                    ),
+                    alt.Tooltip("rebate_package:N", title="Rebate package"),
+                ],
+            )
+        )
+        chart_body = line + pts_muted + pts_rec + lbl
+    else:
+        chart_body = line + pts_rec + lbl
     return _finalize_exec_altair(
-        base.properties(
-            height=320,
-            width=700,
+        chart_body.properties(
+            height=380,
+            width=760,
             background=_EXEC_CHART_PANEL_BG,
             title=alt.TitleParams(
-                text="Expected value by scenario (ranked)",
-                subtitle=["Each dot = one full incentive package · Best score on the left"],
+                text="Incentive ladder — conversion vs total support",
+                subtitle=[
+                    "Smoothed curve shows overall trajectory; green point = recommended package "
+                    "(total modeled support is not monthly payment)"
+                ],
                 fontSize=15,
                 subtitleFontSize=11,
                 subtitleColor="#64748b",
@@ -5876,61 +6275,43 @@ def chart_expected_value_by_rank(
     )
 
 
-def chart_conversion_vs_support_cost_scatter(
-    df: pd.DataFrame,
-    rec: pd.Series,
-) -> alt.Chart:
-    d = df.copy()
-    d["highlight"] = np.where(scenario_rows_match(rec, d), "Recommended", "Other")
+def chart_support_breakdown_recommended(rec: pd.Series, cost_multiplier: float) -> alt.Chart:
+    apr_c = apr_support_cost_component(rec, cost_multiplier)
+    rows = [
+        {"component": "APR support", "dollars": apr_c},
+        {"component": "OEM / customer cash", "dollars": float(rec["customer_cash"])},
+        {"component": "Dealer cash", "dollars": float(rec["dealer_cash"])},
+        {"component": "Loyalty incentive", "dollars": float(rec["loyalty_cash"])},
+        {"component": "Conquest incentive", "dollars": float(rec["conquest_cash"])},
+    ]
+    plot_df = pd.DataFrame([r for r in rows if float(r["dollars"]) >= 0.5])
+    if plot_df.empty:
+        plot_df = pd.DataFrame([{"component": "APR support", "dollars": 0.0}])
+    total = float(plot_df["dollars"].sum())
+    plot_df["pct"] = plot_df["dollars"] / max(total, 1.0) * 100.0
+    plot_df = plot_df.iloc[::-1].reset_index(drop=True)
+    order = plot_df["component"].tolist()
+    tip = [
+        alt.Tooltip("component:N", title="Component"),
+        alt.Tooltip("dollars:Q", title="Amount ($)", format=",.0f"),
+        alt.Tooltip("pct:Q", title="Share of total (%)", format=".1f"),
+    ]
     return _finalize_exec_altair(
-        alt.Chart(d)
-        .mark_circle(
-            size=46,
-            opacity=0.9,
-            stroke=_EXEC_CHART_POINT_MUTED_STROKE,
-            strokeWidth=0.45,
-        )
+        alt.Chart(plot_df)
+        .mark_bar()
         .encode(
-            x=alt.X(
-                "estimated_support_cost:Q",
-                axis=alt.Axis(
-                    title=[
-                        "Est. total support ($)",
-                        "(modeled deal snapshot · not monthly)",
-                    ],
-                ),
-            ),
-            y=alt.Y(
-                "conversion_probability:Q",
-                title="Predicted conversion",
-                axis=alt.Axis(format=".0%"),
-                scale=alt.Scale(domain=[0, 1]),
-            ),
-            color=alt.Color(
-                "highlight:N",
-                scale=alt.Scale(
-                    domain=["Other", "Recommended"],
-                    range=[_EXEC_CHART_POINT_MUTED, _EXEC_CHART_REC_FILL],
-                ),
-                legend=None,
-            ),
-            tooltip=[
-                alt.Tooltip(
-                    "estimated_support_cost:Q",
-                    title="Est. total support ($)",
-                    format=",.0f",
-                ),
-                alt.Tooltip("conversion_probability:Q", title="P(convert)", format=".1%"),
-                alt.Tooltip("dealer_rate_support_level:N", title="Support"),
-                alt.Tooltip("loan_term:N", title="Term"),
-            ],
+            x=alt.X("dollars:Q", title="Dollars ($)", axis=alt.Axis(format=",.0f")),
+            y=alt.Y("component:N", sort=order, title=""),
+            color=alt.Color("component:N", legend=None),
+            tooltip=tip,
         )
         .properties(
-            height=300,
+            height=max(160, 38 * len(plot_df)),
+            width=720,
             background=_EXEC_CHART_PANEL_BG,
             title=alt.TitleParams(
-                text="Conversion vs support cost",
-                subtitle=["Trade-off: close rate (up) vs modeled incentive dollars (across)"],
+                text="Support allocation — recommended package",
+                subtitle=["Share of total modeled support for the recommended scenario"],
                 fontSize=14,
                 subtitleFontSize=11,
                 subtitleColor="#64748b",
@@ -5939,68 +6320,277 @@ def chart_conversion_vs_support_cost_scatter(
     )
 
 
-def chart_lift_vs_support_cost_scatter(
+def chart_diminishing_returns(
     df: pd.DataFrame,
     rec: pd.Series,
 ) -> alt.Chart:
-    d = df.copy()
-    d["highlight"] = np.where(scenario_rows_match(rec, d), "Recommended", "Other")
-    return _finalize_exec_altair(
-        alt.Chart(d)
-        .mark_circle(
-            size=46,
-            opacity=0.9,
-            stroke=_EXEC_CHART_POINT_MUTED_STROKE,
-            strokeWidth=0.45,
+    d = df.sort_values("estimated_support_cost").reset_index(drop=True)
+    d["incremental_conv_pp"] = d["conversion_probability"].astype(float).diff() * 100.0
+    plot_pts = d.iloc[1:].copy()
+    rec_cost = float(rec["estimated_support_cost"])
+    c_max = float(d["estimated_support_cost"].max())
+    c_tail = overspend_support_hint_cost(df, rec_cost)
+    c2 = float(c_tail) if c_tail is not None else min(rec_cost * 1.4, c_max)
+    c2 = min(max(c2, rec_cost + 1.0), c_max)
+    bands = pd.DataFrame(
+        [
+            {"x1": 0.0, "x2": rec_cost, "zone": "Efficient support"},
+            {"x1": rec_cost, "x2": c2, "zone": "Moderate diminishing returns"},
+            {"x1": c2, "x2": c_max, "zone": "Overspending / low efficiency"},
+        ]
+    )
+    rect = (
+        alt.Chart(bands)
+        .mark_rect(opacity=0.18)
+        .encode(
+            x=alt.X("x1:Q", title="Total support cost ($)"),
+            x2="x2:Q",
+            color=alt.Color(
+                "zone:N",
+                legend=alt.Legend(title=None, orient="bottom"),
+                scale=alt.Scale(
+                    domain=[
+                        "Efficient support",
+                        "Moderate diminishing returns",
+                        "Overspending / low efficiency",
+                    ],
+                    range=["#bbf7d0", "#fef08a", "#fecaca"],
+                ),
+            ),
+        )
+    )
+    line = (
+        alt.Chart(plot_pts)
+        .mark_line(
+            color="#475569",
+            strokeWidth=2,
+            interpolate="monotone",
         )
         .encode(
-            x=alt.X(
-                "estimated_support_cost:Q",
-                axis=alt.Axis(
-                    title=[
-                        "Est. total support ($)",
-                        "(modeled deal snapshot · not monthly)",
-                    ],
-                ),
-            ),
+            x=alt.X("estimated_support_cost:Q", axis=alt.Axis(format=",.0f")),
             y=alt.Y(
-                "conversion_lift_vs_baseline:Q",
-                title="Lift vs no-incentive baseline",
-                axis=alt.Axis(format=".2f"),
+                "incremental_conv_pp:Q",
+                title="Incremental conversion (pp vs prior step)",
             ),
-            color=alt.Color(
-                "highlight:N",
-                scale=alt.Scale(
-                    domain=["Other", "Recommended"],
-                    range=[_EXEC_CHART_POINT_MUTED, _EXEC_CHART_REC_FILL],
-                ),
-                legend=None,
-            ),
+        )
+    )
+    pts = (
+        alt.Chart(plot_pts)
+        .mark_circle(size=45, color="#64748b", stroke="#fff", strokeWidth=0.5, opacity=0.75)
+        .encode(
+            x="estimated_support_cost:Q",
+            y="incremental_conv_pp:Q",
             tooltip=[
+                alt.Tooltip("estimated_support_cost:Q", title="Support ($)", format=",.0f"),
                 alt.Tooltip(
-                    "estimated_support_cost:Q",
-                    title="Est. total support ($)",
-                    format=",.0f",
+                    "incremental_conv_pp:Q",
+                    title="Incremental conversion (pp)",
+                    format=".2f",
                 ),
-                alt.Tooltip(
-                    "conversion_lift_vs_baseline:Q",
-                    title="Lift vs no-incentive baseline",
-                    format=".4f",
-                ),
-                alt.Tooltip("dealer_rate_support_level:N", title="Support"),
             ],
         )
-        .properties(
-            height=300,
+    )
+    rec_line = alt.Chart(pd.DataFrame({"x": [rec_cost]})).mark_rule(
+        color=_EXEC_CHART_REC_STROKE, strokeWidth=2, strokeDash=[4, 3]
+    ).encode(x="x:Q")
+    chart = rect + line + pts + rec_line
+    return _finalize_exec_altair(
+        chart.properties(
+            height=340,
+            width=760,
             background=_EXEC_CHART_PANEL_BG,
             title=alt.TitleParams(
-                text="Lift vs support cost",
-                subtitle=["Does spend buy uplift vs a no-incentive desk quote at the same term?"],
+                text="Diminishing returns — incremental lift along the ladder",
+                subtitle=[
+                    "Sorted scenarios: each point is lift vs the next-cheaper package in the search"
+                ],
                 fontSize=14,
                 subtitleFontSize=11,
                 subtitleColor="#64748b",
             ),
         )
+    )
+
+
+def format_multi_lever_display(
+    df: pd.DataFrame,
+    rec: pd.Series | None = None,
+) -> pd.DataFrame:
+    """Business-facing columns for executive scenario tables."""
+    out = df.copy()
+    out["Support Package"] = out.apply(support_package_label, axis=1)
+    if rec is not None:
+        m = scenario_rows_match(rec, out)
+        out["Recommendation Status"] = np.where(
+            m,
+            "Recommended efficient offer",
+            "Alternative package",
+        )
+    else:
+        out["Recommendation Status"] = "—"
+
+    rename_map: dict[str, str] = {
+        "scenario_dealer_apr": "Dealer APR",
+        "scenario_dealer_monthly_payment": "Monthly Payment",
+        "loan_term": "Loan Term",
+        "customer_cash": "OEM Cash",
+        "dealer_cash": "Dealer Contribution",
+        "loyalty_cash": "Loyalty Incentive",
+        "conquest_cash": "Conquest Incentive",
+        "estimated_support_cost": "Total Support Cost",
+        "conversion_probability": "Predicted Conversion",
+        "remaining_margin_estimate": "Remaining Margin",
+        "expected_value": "Net Deal Outcome ($)",
+        "efficiency_score": "Support Efficiency",
+    }
+    ordered_keys = [
+        "Support Package",
+        "scenario_dealer_apr",
+        "scenario_dealer_monthly_payment",
+        "loan_term",
+        "customer_cash",
+        "dealer_cash",
+        "loyalty_cash",
+        "conquest_cash",
+        "estimated_support_cost",
+        "conversion_probability",
+        "remaining_margin_estimate",
+        "expected_value",
+        "efficiency_score",
+        "Recommendation Status",
+    ]
+    present = [k for k in ordered_keys if k in out.columns]
+    chunk = out[present].rename(columns={k: rename_map[k] for k in present if k in rename_map})
+    return chunk
+
+
+def build_executive_summary_html(
+    prob_current: float,
+    recommended: pd.Series,
+    enriched_multi: pd.DataFrame,
+) -> str:
+    p0 = prob_current
+    p1 = float(recommended["conversion_probability"])
+    lift_pp = (p1 - p0) * 100.0
+    sup = float(recommended["estimated_support_cost"])
+    hint = overspend_support_hint_cost(enriched_multi, sup)
+    extra = ""
+    if hint is not None and hint > sup + 50:
+        extra = (
+            f" Additional modeled spend beyond approximately <b>${hint:,.0f}</b> shows "
+            "materially lower incremental conversion gains along the searched ladder."
+        )
+    return (
+        f'<div class="exec-summary-callout"><p>'
+        f"The <b>recommended efficient offer</b> moves predicted conversion from "
+        f"<b>{p0:.0%}</b> to <b>{p1:.0%}</b> "
+        f"(<b>{lift_pp:+.1f}</b> percentage points vs your submitted desk quote) "
+        f"with approximately <b>${sup:,.0f}</b> in total modeled support.{extra}"
+        f"</p></div>"
+    )
+
+
+def render_three_scenario_comparison_html(
+    *,
+    label_current: str,
+    prob_c: float,
+    sup_c: float,
+    pay_c: float,
+    apr_c: float,
+    rem_c: float,
+    label_rec: str,
+    prob_r: float,
+    sup_r: float,
+    pay_r: float,
+    apr_r: float,
+    rem_r: float,
+    label_agg: str,
+    prob_a: float,
+    sup_a: float,
+    pay_a: float,
+    apr_a: float,
+    rem_a: float,
+) -> str:
+    _h_prob = (
+        "Modeled probability this finance structure closes (`predict_proba`). "
+        "Same definition as elsewhere — **not** a guaranteed close rate."
+    )
+    _h_sup = (
+        "Total **modeled** incentive dollars: APR buy-down estimate plus OEM/customer, dealer, "
+        "loyalty, and conquest cash for **this** scenario."
+    )
+    _h_pay = (
+        "Estimated monthly payment from **APR**, **term**, and **amount financed** for this scenario."
+    )
+    _h_apr = (
+        "Customer-facing annual rate after applying this scenario’s structure and rate support."
+    )
+    _h_rem = (
+        "**Expected unit gross** you entered minus **estimated support** — rough gross after "
+        "incentives for desk discussion."
+    )
+
+    def card(
+        title: str,
+        title_help: str,
+        highlight: bool,
+        prob: float,
+        sup: float,
+        pay: float,
+        apr: float,
+        rem: float,
+    ) -> str:
+        cls = "exec-scenario-compare-card exec-scen-rec" if highlight else "exec-scenario-compare-card"
+        title_row = (
+            f'<div class="esc-title" style="display:flex;align-items:center;gap:0.35rem;flex-wrap:wrap;">'
+            f"{html.escape(title)}{_hint(title_help)}</div>"
+        )
+        return (
+            f'<div class="{cls}">'
+            f"{title_row}"
+            + _comparison_metric_row("Predicted conversion", f"{prob:.1%}", _h_prob)
+            + _comparison_metric_row("Total support cost", f"${sup:,.0f}", _h_sup)
+            + _comparison_metric_row("Monthly payment", f"${pay:,.0f}", _h_pay)
+            + _comparison_metric_row("Dealer APR", f"{apr:.3f}%", _h_apr)
+            + _comparison_metric_row("Remaining margin", f"${rem:,.0f}", _h_rem)
+            + "</div>"
+        )
+
+    return (
+        '<div class="exec-scenario-compare-grid">'
+        + card(
+            label_current,
+            "Your **submitted desk quote** before optimizer changes — baseline for lift and comparison.",
+            False,
+            prob_c,
+            sup_c,
+            pay_c,
+            apr_c,
+            rem_c,
+        )
+        + card(
+            label_rec,
+            "**Recommended efficient offer** — best feasible package from the optimizer search under "
+            "your constraints and ranking rule (default: net deal outcome).",
+            True,
+            prob_r,
+            sup_r,
+            pay_r,
+            apr_r,
+            rem_r,
+        )
+        + card(
+            label_agg,
+            "**Aggressive** scenario — highest modeled conversion among searched packages; often "
+            "more support than the efficient recommendation.",
+            False,
+            prob_a,
+            sup_a,
+            pay_a,
+            apr_a,
+            rem_a,
+        )
+        + "</div>"
     )
 
 
@@ -6145,10 +6735,16 @@ def main():
     cm = float(st.session_state.sb_cost_multiplier)
     prob_current: float | None = None
     current_support_cost = estimate_support_cost(business, 0.0, cm)
+    desk_support_cost = estimate_support_cost(
+        business,
+        float(business.get("dealer_rate_support_level") or 0),
+        cm,
+    )
     optimization_constraints = build_optimization_constraints_from_session()
 
     sim_err: str | None = None
     sim_err_single: str | None = None
+    optimization_meta: dict[str, Any] | None = None
     enriched_multi: pd.DataFrame | None = None
     enriched_single: pd.DataFrame | None = None
 
@@ -6189,7 +6785,7 @@ def main():
                         prob_current = predict_conversion(pipeline, model_df)
                     except Exception:
                         prob_current = None
-                    em, sim_err = run_constraint_based_offer_scenarios(
+                    em, sim_err, opt_meta = run_constraint_based_offer_scenarios(
                         business,
                         optimization_constraints,
                         pipeline,
@@ -6199,6 +6795,7 @@ def main():
                     )
                     if sim_err is None and em is not None and not em.empty:
                         enriched_multi = em
+                        optimization_meta = opt_meta
 
                     sim_single_df, sim_err_single = run_support_scenarios(
                         business,
@@ -6220,6 +6817,7 @@ def main():
                 "enriched_single": _cache_df(enriched_single),
                 "sim_err": sim_err,
                 "sim_err_single": sim_err_single,
+                "optimization_meta": optimization_meta,
                 "row_model": copy.deepcopy(row_model) if row_model else None,
                 "model_df": _cache_df(model_df),
                 "align_err": align_err,
@@ -6235,6 +6833,7 @@ def main():
             enriched_single = c.get("enriched_single")
             sim_err = c.get("sim_err")
             sim_err_single = c.get("sim_err_single")
+            optimization_meta = c.get("optimization_meta")
             row_model = c.get("row_model")
             model_df = c.get("model_df")
             align_err = c.get("align_err")
@@ -6266,6 +6865,9 @@ def main():
 
     recommended_pkg: pd.Series | None = None
     recommendation_relaxed_flag = False
+    feasible_df_result: pd.DataFrame | None = None
+    feasible_scenario_count = 0
+    recommended_rank: int | None = None
     if (
         enriched_multi is not None
         and not enriched_multi.empty
@@ -6273,29 +6875,50 @@ def main():
         and not errs
         and align_err is None
     ):
-        recommended_pkg, _, recommendation_relaxed_flag = select_recommended_constrained(
-            enriched_multi,
-            float(business["expected_unit_margin"]),
-            optimization_constraints,
+        recommended_pkg, feasible_df_result, recommendation_relaxed_flag = (
+            select_recommended_constrained(
+                enriched_multi,
+                float(business["expected_unit_margin"]),
+                optimization_constraints,
+            )
         )
+        if recommended_pkg is not None:
+            if (
+                not recommendation_relaxed_flag
+                and feasible_df_result is not None
+                and not feasible_df_result.empty
+            ):
+                feasible_scenario_count = len(feasible_df_result)
+                fsort = feasible_df_result.sort_values(
+                    "expected_value", ascending=False
+                ).reset_index(drop=True)
+                mk = scenario_rows_match(recommended_pkg, fsort)
+                if mk.any():
+                    recommended_rank = int(fsort.index[mk][0]) + 1
+            else:
+                fsort = enriched_multi.sort_values(
+                    "expected_value", ascending=False
+                ).reset_index(drop=True)
+                mk = scenario_rows_match(recommended_pkg, fsort)
+                if mk.any():
+                    recommended_rank = int(fsort.index[mk][0]) + 1
 
     tab_rec, tab_cmp, tab_md = st.tabs(
         [
             "Offer recommendation",
-            "Scenario exploration",
+            "Offer analytics",
             "Model Details",
         ]
     )
 
     with tab_rec:
         st.markdown(
-            '<p class="exec-muted">You define <b>context</b> and <b>optimization constraints</b>. '
-            "The engine searches mixes of APR buy-down plus OEM/customer, dealer, loyalty, "
-            "and conquest cash across allowed loan terms. "
-            "<b>Recommended package</b> maximizes "
-            "<b>expected value</b> (predicted conversion × expected unit margin − modeled support "
-            "cost) subject to your feasibility filters; ties within "
-            "**5%** of best EV defer to lower support spend.</p>",
+            '<p class="exec-muted">Define <b>market context</b> and <b>optimization constraints</b>. '
+            "The engine searches APR buy-down plus OEM/customer, dealer, loyalty, and conquest cash "
+            "across allowed loan terms. The <b>recommended efficient offer</b> maximizes "
+            "<b>net deal outcome</b> (predicted conversion × expected unit margin − modeled support) "
+            "within your feasibility filters; ties within <b>5%</b> of the best score defer to "
+            "lower support spend.</p>",
             unsafe_allow_html=True,
         )
         if not submitted:
@@ -6315,16 +6938,129 @@ def main():
         elif recommended_pkg is None:
             st.error("Could not derive a recommended package.")
         else:
+            if optimization_meta is not None:
+                om = optimization_meta
+                sm = str(om.get("search_mode", "—"))
+                total_g = int(om.get("total_grid_scenarios", 0))
+                ev_n = int(om.get("scenarios_evaluated", 0))
+                rt = float(om.get("runtime_seconds", 0.0))
+                rnk = recommended_rank
+                rnk_s = "—" if rnk is None else str(int(rnk))
+                feas_n = int(feasible_scenario_count)
+                if sm == "Full grid search":
+                    cred = (
+                        "Because the scenario count is within the configured threshold, the optimizer "
+                        "evaluated <b>every</b> offer package in the configured grid. The recommendation "
+                        "is the best package found across that full grid — <b>not</b> a random sample."
+                    )
+                else:
+                    cred = (
+                        "<b>Large scenario space detected.</b> Coarse-to-fine optimization was used: "
+                        "a deterministic coarse grid (50 bps rate steps, $1,000 cash steps) was fully "
+                        "scored, then the top packages were refined with local neighbors "
+                        "(±25 bps, ±$500 cash, adjacent loan terms)."
+                    )
+                    if om.get("coarse_grid_truncated"):
+                        cred += (
+                            " The coarse grid was <b>deterministically thinned</b> so evaluation stays "
+                            f"within {MAX_FULL_ENUMERATION:,} coarse scenarios."
+                        )
+                cref = ""
+                if sm == "Coarse-to-fine search":
+                    cref = (
+                        f"<p class=\"exec-muted-small\" style=\"margin:0.35rem 0 0 0;\">"
+                        f"Coarse phase scored <b>{int(om.get('coarse_evaluated', 0)):,}</b> scenarios; "
+                        f"refinement scored <b>{int(om.get('refined_evaluated', 0)):,}</b> additional "
+                        f"neighbor packages.</p>"
+                    )
+                _hint_opt_title = (
+                    "Counts and mode for how offer packages were searched and scored. "
+                    "**Full grid** enumerates (within limits); **coarse-to-fine** scores a deterministic coarse pass "
+                    "then refines neighbors when the grid is too large."
+                )
+                _hint_search_method = (
+                    "**Full grid search** evaluates every combination in the configured grid (when within limits). "
+                    "**Coarse-to-fine** uses a deterministic coarse grid plus local refinement when enumeration "
+                    "would be too large."
+                )
+                _hint_total_gen = (
+                    "Unique APR buy-down × cash × term combinations implied by your supported grids **before** "
+                    "feasibility filters."
+                )
+                _hint_evaluated = (
+                    "Packages actually scored with the conversion model (may be fewer than generated when "
+                    "coarse-to-fine skips exhaustive enumeration)."
+                )
+                _hint_feasible = (
+                    "Packages passing your configured rules (budget, margin floor, lift vs baseline, etc.)."
+                )
+                _hint_rank = (
+                    "Where the **recommended efficient** package lands when feasible scenarios are sorted by "
+                    "the default **net deal outcome** ranking (rank **1** = best under that rule)."
+                )
+                _hint_runtime = (
+                    "Wall-clock seconds for searching and scoring scenarios on this run (model calls plus "
+                    "bookkeeping)."
+                )
+                st.markdown(
+                    f'<div class="exec-subcard" style="margin-bottom:1rem;">'
+                    f'<div class="esl" style="display:flex;align-items:center;gap:0.35rem;flex-wrap:wrap;">'
+                    f"Optimization Search Summary{_hint(_hint_opt_title)}"
+                    f"</div>"
+                    f'<p class="exec-muted-small" style="margin:0 0 0.5rem 0;display:flex;align-items:flex-start;'
+                    f'gap:0.35rem;flex-wrap:wrap;"><span style="display:inline-flex;align-items:center;'
+                    f'gap:0.28rem;flex-wrap:wrap;">{_labeled_hint("Search method", _hint_search_method)}</span>'
+                    f"<span>{html.escape(sm)}</span></p>"
+                    f'<p class="exec-muted-small" style="margin:0 0 0.35rem 0;"><span style="display:inline-flex;'
+                    f'align-items:center;gap:0.28rem;flex-wrap:wrap;">'
+                    f'{_labeled_hint("Total generated scenarios (configured grid)", _hint_total_gen)}</span> '
+                    f"<span>{total_g:,}</span></p>"
+                    f'<p class="exec-muted-small" style="margin:0 0 0.35rem 0;"><span style="display:inline-flex;'
+                    f'align-items:center;gap:0.28rem;flex-wrap:wrap;">'
+                    f'{_labeled_hint("Scenarios evaluated", _hint_evaluated)}</span> '
+                    f"<span>{ev_n:,} of {total_g:,}</span></p>"
+                    f'<p class="exec-muted-small" style="margin:0 0 0.35rem 0;"><span style="display:inline-flex;'
+                    f'align-items:center;gap:0.28rem;flex-wrap:wrap;">'
+                    f'{_labeled_hint("Feasible scenarios (after constraints)", _hint_feasible)}</span> '
+                    f"<span>{feas_n:,}</span></p>"
+                    f'<p class="exec-muted-small" style="margin:0 0 0.35rem 0;"><span style="display:inline-flex;'
+                    f'align-items:center;gap:0.28rem;flex-wrap:wrap;">'
+                    f'{_labeled_hint("Recommended scenario rank (among feasible by net deal outcome)", _hint_rank)}</span> '
+                    f"<span>{rnk_s}</span></p>"
+                    f'<p class="exec-muted-small" style="margin:0 0 0.35rem 0;"><span style="display:inline-flex;'
+                    f'align-items:center;gap:0.28rem;flex-wrap:wrap;">'
+                    f'{_labeled_hint("Optimizer runtime", _hint_runtime)}</span> <span>{rt:.2f}s</span></p>'
+                    f"{cref}"
+                    f"<p class=\"exec-muted-small\" style=\"margin:0.65rem 0 0 0;line-height:1.45;\">{cred}</p>"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+
             recommended = recommended_pkg
             highest = select_highest_conversion_scenario(enriched_multi)
-            lowest_cost = select_lowest_cost_scenario(enriched_multi)
-            best_ev = select_recommended_expected_value(enriched_multi)
             sup_lbl = rate_support_tier_label(int(recommended["dealer_rate_support_level"]))
+            rem_m = float(recommended.get("remaining_margin_estimate", 0))
+            lift_vs_desk_pp = (
+                float(recommended["conversion_probability"]) - float(prob_current)
+            ) * 100.0
+            eu_margin = float(business["expected_unit_margin"])
+            cur_apr = (
+                float(row_model["dealer_apr"])
+                if row_model is not None
+                else float(business["baseline_dealer_apr"])
+            )
+            cur_pay = (
+                float(row_model["dealer_monthly_payment"])
+                if row_model is not None
+                else float(business["baseline_dealer_monthly_payment"])
+            )
+            rem_cur = eu_margin - desk_support_cost
+
             if recommendation_relaxed_flag:
                 st.warning(
                     "No scenarios satisfied **all** feasibility filters simultaneously "
                     "(budget, residual margin floor, lift vs **no-incentive baseline** at the "
-                    "scenario term). Showing the best **expected value** unconstrained fallback — "
+                    "scenario term). Showing the best **net deal outcome** unconstrained fallback — "
                     "relax constraints or raise budget caps to surface compliant packages."
                 )
 
@@ -6336,38 +7072,29 @@ def main():
                 headline, plain = competitive_position_detail(apr_gap)
                 st.markdown(
                     '<p class="exec-section-title" style="display:flex;align-items:center;gap:0.35rem;flex-wrap:wrap;">'
-                    "Baseline context (before incentives)"
-                    f"{_hint('Desk snapshot using current inputs with zero modeled rate buy-down and zero stacked rebates — anchor before incentive scenarios.')}"
+                    "Your submitted quote vs. competitor"
+                    f"{_hint('Uses your current desk inputs (APR, payment, stacked rebates) vs the modeled competitor.')}"
                     "</p>",
                     unsafe_allow_html=True,
                 )
                 snap_a, snap_b, snap_c = st.columns(3)
                 with snap_a:
                     st.metric(
-                        "Baseline conversion (no APR buy-down)",
+                        "Predicted conversion (current offer)",
                         f"{prob_current:.1%}",
-                        help=(
-                            "Model estimate with **zero** modeled rate support "
-                            "and zero stacked rebates — starting point vs optimized packages."
-                        ),
+                        help="Modeled close probability for the **submitted** finance quote.",
                     )
                 with snap_b:
                     st.metric(
                         "Likelihood band",
                         likelihood_band(prob_current),
-                        help=(
-                            "Qualitative bucket for baseline conversion (before incentives) — "
-                            "for quick interpretation of model confidence bands."
-                        ),
+                        help="Quick qualitative read on modeled close probability.",
                     )
                 with snap_c:
                     st.metric(
                         "Competitive position",
                         headline,
-                        help=(
-                            "Plain-language stance vs the modeled competitor offer using APR gap, "
-                            "payment delta, and stacked rebates."
-                        ),
+                        help="Versus the modeled competitor on APR, payment, and cash.",
                     )
                 st.markdown(
                     f'<p class="exec-muted-small">{html.escape(plain)}</p>',
@@ -6402,20 +7129,87 @@ def main():
                         ),
                     )
                 st.metric(
-                    "Estimated support @ baseline incentives",
+                    "Estimated total support (current desk inputs)",
+                    f"${desk_support_cost:,.0f}",
+                    help="Modeled support at your **entered** rate-support tier plus stacked cash.",
+                )
+                st.metric(
+                    "Zero‑incentive reference (model anchor)",
                     f"${current_support_cost:,.0f}",
-                    help="APR cost component with **zero** buy-down plus zero stacked cash rebates.",
+                    help="Support cost with **zero** rate buy-down — useful benchmark only.",
                 )
                 st.divider()
 
             st.markdown(
-                '<p class="exec-section-title" style="display:flex;align-items:center;gap:0.35rem;'
-                'flex-wrap:wrap;">Recommended incentive package'
-                f"{_hint('Best package found by the search: maximizes expected value (conversion × margin − support) subject to your feasibility filters.')}"
-                "</p>",
+                build_executive_summary_html(
+                    float(prob_current), recommended, enriched_multi
+                ),
                 unsafe_allow_html=True,
             )
-            rem_m = float(recommended.get("remaining_margin_estimate", 0))
+
+            hero_html = (
+                '<div class="exec-hero-metrics-grid">'
+                '<div class="exec-hero-metric-tile exec-hero-metric-rec">'
+                + _hero_metric_label(
+                    "Recommended conversion",
+                    "Predicted probability the customer accepts **this recommended** finance package "
+                    "(from the model’s `predict_proba` — not a guarantee).",
+                )
+                + f'<p class="ehm-value">{recommended["conversion_probability"]:.1%}</p>'
+                + '<p class="ehm-sub">Share of deals modeled to close at this offer.</p></div>'
+                '<div class="exec-hero-metric-tile exec-hero-metric-rec">'
+                + _hero_metric_label(
+                    "Lift vs current offer",
+                    "Extra predicted conversion **versus your submitted desk quote** (same model). "
+                    "**pp** = **percentage points**: take the two probabilities as numbers and subtract. "
+                    "Example: 58% vs 73.1% → **+15.1 pp** (73.1 − 58), not “15.1% of 58%.”",
+                )
+                + f'<p class="ehm-value">{lift_vs_desk_pp:+.1f} pp</p>'
+                + "<p class=\"ehm-sub\">Points added to close rate vs current-offer estimate.</p></div>"
+                '<div class="exec-hero-metric-tile exec-hero-metric-rec">'
+                + _hero_metric_label(
+                    "Estimated support cost",
+                    "Total **modeled** incentive dollars for this package: APR buy-down estimate "
+                    "(loan × support bps × calibration) **plus** OEM/customer, dealer, loyalty, and "
+                    "conquest cash. One-time snapshot — **not** the customer’s monthly payment.",
+                )
+                + f'<p class="ehm-value">${recommended["estimated_support_cost"]:,.0f}</p>'
+                + '<p class="ehm-sub">Full-package incentive economics.</p></div>'
+                '<div class="exec-hero-metric-tile exec-hero-metric-rec">'
+                + _hero_metric_label(
+                    "Estimated remaining margin",
+                    "**Expected unit gross** you entered minus **estimated support cost** for this "
+                    "scenario — directional for desk discussion, not GAAP.",
+                )
+                + f'<p class="ehm-value">${rem_m:,.0f}</p>'
+                + '<p class="ehm-sub">Rough gross after incentives.</p></div>'
+                '<div class="exec-hero-metric-tile exec-hero-metric-rec">'
+                + _hero_metric_label(
+                    "Recommended dealer APR",
+                    "Customer-facing annual rate after applying this scenario’s **rate support** "
+                    "and structure (modeled).",
+                )
+                + f'<p class="ehm-value">{recommended["scenario_dealer_apr"]:.3f}%</p>'
+                + '<p class="ehm-sub">Subvented APR on the quote.</p></div>'
+                '<div class="exec-hero-metric-tile exec-hero-metric-rec">'
+                + _hero_metric_label(
+                    "Estimated monthly payment",
+                    "Monthly payment implied by recommended **APR**, **term**, and **amount financed** "
+                    "for this scenario.",
+                )
+                + f'<p class="ehm-value">${recommended["scenario_dealer_monthly_payment"]:,.0f}</p>'
+                + '<p class="ehm-sub">Desk payment for this structure.</p></div>'
+                '<div class="exec-hero-metric-tile exec-hero-metric-rec">'
+                + _hero_metric_label(
+                    "Recommended loan term",
+                    "Finance length **in months** for this recommended package within your allowed terms.",
+                )
+                + f'<p class="ehm-value">{int(recommended["loan_term"])} mo</p>'
+                + '<p class="ehm-sub">Contract length.</p></div>'
+                "</div>"
+            )
+            st.markdown(hero_html, unsafe_allow_html=True)
+
             rec_cash_total = (
                 float(recommended.get("customer_cash", 0))
                 + float(recommended.get("dealer_cash", 0))
@@ -6427,153 +7221,95 @@ def main():
                 rate_only_callout = (
                     '<p class="exec-muted-small" style="margin:0.45rem 0 0.65rem 0;padding:0.55rem 0.85rem;'
                     'background:#f8fafc;border-radius:10px;border-left:4px solid #64748b;line-height:1.5;">'
-                    "<b>No cash on this row?</b> The optimizer still searched OEM/customer, dealer, loyalty, "
-                    "and conquest cash within your caps — here they are all <b>$0</b> because this mix "
-                    "won on expected value. Support is modeled as <b>APR buy-down only</b> "
-                    f'(<b>{int(recommended["dealer_rate_support_level"])}</b> bps vs standard retail). '
-                    "<b>Est. support cost</b> is mainly that financing subsidy (plus calibration); "
-                    "see <b>Scenario exploration</b> for other combinations.</p>"
+                    "<b>APR-led package:</b> Within your caps, OEM/customer, dealer, loyalty, and conquest "
+                    "cash are <b>$0</b> on this row — the optimizer favored "
+                    f"<b>{int(recommended['dealer_rate_support_level'])}</b> bps buy-down "
+                    f'({html.escape(sup_lbl)}). See <b>Offer analytics</b> for other mixes.</p>'
                 )
+
             st.markdown(
-                '<div class="exec-hero-card exec-rec-card" style="background:#ecfdf5;border-color:#bbf7d0;">'
-                '<div class="exec-label" style="display:flex;align-items:center;gap:0.35rem;flex-wrap:wrap;">'
-                "Efficient frontier pick (constraints-aware)"
-                f"{_hint('Chosen where incremental conversion uplift per dollar of support is attractive within your budgets, floors, and rule set.')}"
-                "</div>"
-                f"{rate_only_callout}"
-                f'<div class="esv" style="font-size:1.25rem;font-weight:700;margin:0.35rem 0;">'
-                f"{html.escape(sup_lbl)}</div>"
-                "<p class='exec-muted-small'><b>APR / rate support tier:</b>"
-                f"{_hint('Buy-down from standard retail APR modeled for this package (basis points).')}"
-                f' {int(recommended["dealer_rate_support_level"])} bps buy-down modeled</p>'
-                "<p class='exec-muted-small'><b>OEM/customer visible cash:</b>"
-                f"{_hint('OEM or national stackable cash visible to the shopper on the quote.')}"
-                f' ${recommended["customer_cash"]:,.0f}</p>'
-                "<p class='exec-muted-small'><b>Dealer cash contribution:</b>"
-                f"{_hint('Dealer-funded cash included in this incentive mix.')}"
-                f' ${recommended["dealer_cash"]:,.0f}</p>'
-                "<p class='exec-muted-small'><b>Loyalty / conquest cash:</b>"
-                f"{_hint('OEM incentives targeting repeat buyers vs conquest shoppers (split shown).')}"
-                f' ${recommended["loyalty_cash"]:,.0f} / ${recommended["conquest_cash"]:,.0f}</p>'
-                "<p class='exec-muted-small'><b>Subvented dealer APR:</b>"
-                f"{_hint('Customer-facing APR after applying this scenario’s rate support and structure.')}"
-                f' {recommended["scenario_dealer_apr"]:.3f}%</p>'
-                "<p class='exec-muted-small'>"
-                f"<b>Estimated monthly payment:</b>{_hint('Desk payment implied by scenario APR, term, and amount financed.')}"
-                f' ${recommended["scenario_dealer_monthly_payment"]:,.0f} · '
-                f'<b>Term:</b> {int(recommended["loan_term"])} mo '
-                f'· <b>Financed:</b> ${recommended["scenario_loan_amount"]:,.0f}</p>'
-                "<p class='exec-muted-small'><b>Predicted conversion:</b>"
-                f"{_hint('Model probability of closing at this incentive mix.')}"
-                f' {recommended["conversion_probability"]:.1%} · '
-                f'<b>Lift vs no-incentive baseline</b>{_hint("Uplift vs zero stacked incentives at the same loan term (relative).")}'
-                f' (same term): {recommended["conversion_lift_vs_baseline"]:.2%}</p>'
-                "<p class='exec-muted-small'><b>Lift from APR subsidy</b>"
-                f"{_hint('Conversion lift attributed to APR buy-down alone; cash rebates held fixed.')}"
-                f' (cash unchanged): {recommended["conversion_lift_vs_zero_apr_same_cash"]:.2%}</p>'
-                "<p class='exec-muted-small'><b>Estimated total support cost:</b>"
-                f"{_hint('Dollar cost model for stacked APR support plus cash components in this scenario.')}"
-                f' ${recommended["estimated_support_cost"]:,.0f}</p>'
-                "<p class='exec-muted-small'>"
-                f"<b>Expected value:</b>{_hint('Predicted conversion × unit margin estimate − modeled support cost (optimizer objective).')}"
-                f' ${recommended["expected_value"]:,.0f} · '
-                f'<b>Remaining margin estimate:</b>{_hint("Rough gross remaining after incentives — directional for desk discussion, not GAAP.")}'
-                f' ${rem_m:,.0f}</p>'
-                "<p class='exec-muted-small'><b>Efficiency (lift ÷ spend):</b>"
-                f"{_hint('How much conversion lift you buy per dollar of modeled support at this package.')}"
-                f' {recommended["efficiency_score"]:.4f}</p>'
-                "</div>",
+                '<p class="exec-section-title" style="display:flex;align-items:center;gap:0.35rem;flex-wrap:wrap;">'
+                "Compare scenarios"
+                f"{_hint('Current desk inputs vs the recommended efficient offer vs maximum modeled conversion.')}"
+                "</p>",
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                render_three_scenario_comparison_html(
+                    label_current="Current offer",
+                    prob_c=float(prob_current),
+                    sup_c=float(desk_support_cost),
+                    pay_c=cur_pay,
+                    apr_c=cur_apr,
+                    rem_c=float(rem_cur),
+                    label_rec="Recommended efficient offer",
+                    prob_r=float(recommended["conversion_probability"]),
+                    sup_r=float(recommended["estimated_support_cost"]),
+                    pay_r=float(recommended["scenario_dealer_monthly_payment"]),
+                    apr_r=float(recommended["scenario_dealer_apr"]),
+                    rem_r=float(rem_m),
+                    label_agg="Aggressive offer",
+                    prob_a=float(highest["conversion_probability"]),
+                    sup_a=float(highest["estimated_support_cost"]),
+                    pay_a=float(highest["scenario_dealer_monthly_payment"]),
+                    apr_a=float(highest["scenario_dealer_apr"]),
+                    rem_a=float(highest.get("remaining_margin_estimate", 0)),
+                ),
                 unsafe_allow_html=True,
             )
 
-            hs = rate_support_tier_label(int(highest["dealer_rate_support_level"]))
-            lc_lbl = rate_support_tier_label(
-                int(lowest_cost["dealer_rate_support_level"])
-            )
-            bev = rate_support_tier_label(int(best_ev["dealer_rate_support_level"]))
-            pc = prob_current if prob_current is not None else float("nan")
-            _hp = "Model-estimated close probability for this incentive package."
-            _hc = "Total modeled dollar cost of APR/rate support plus stacked rebates for this row."
             st.markdown(
-                '<div class="exec-subcard-grid">'
-                '<div class="exec-subcard"><div class="esl">Highest conversion scenario</div>'
-                f'<div class="esv">{html.escape(hs)}</div>'
-                f"<p class='exec-muted-small'><b>Predicted conversion:</b>{_hint(_hp)} "
-                f'{highest["conversion_probability"]:.1%}</p>'
-                f"<p class='exec-muted-small'><b>Est. support cost:</b>{_hint(_hc)} "
-                f'${highest["estimated_support_cost"]:,.0f}</p>'
-                "<p class='exec-muted-small'><b>Term / cash stack:</b>"
-                f"{_hint('Loan term plus OEM/customer vs dealer cash in this scenario snapshot.')}"
-                f' {int(highest["loan_term"])} mo · '
-                f'${highest["customer_cash"]:,.0f} cust / ${highest["dealer_cash"]:,.0f} dealer</p></div>'
-                '<div class="exec-subcard"><div class="esl">Lowest cost scenario</div>'
-                f'<div class="esv">{html.escape(lc_lbl)}</div>'
-                f"<p class='exec-muted-small'><b>Predicted conversion:</b>{_hint(_hp)} "
-                f'{lowest_cost["conversion_probability"]:.1%}</p>'
-                f"<p class='exec-muted-small'><b>Est. support cost:</b>{_hint(_hc)} "
-                f'${lowest_cost["estimated_support_cost"]:,.0f}</p>'
-                "<p class='exec-muted-small'><b>Term:</b>"
-                f"{_hint('Finance term (months) for this lowest modeled support-cost scenario.')}"
-                f' {int(lowest_cost["loan_term"])} mo</p></div>'
-                '<div class="exec-subcard"><div class="esl">Highest unconstrained expected value</div>'
-                f'<div class="esv">{html.escape(bev)}</div>'
-                "<p class='exec-muted-small'><b>Expected value:</b>"
-                f"{_hint('Predicted conversion × margin − modeled support for this scenario (optimizer objective).')}"
-                f' ${best_ev["expected_value"]:,.0f}</p>'
-                f"<p class='exec-muted-small'><b>P(convert):</b>{_hint(_hp)} "
-                f'{best_ev["conversion_probability"]:.1%}</p>'
-                f"<p class='exec-muted-small'><b>Est. support cost:</b>{_hint(_hc)} "
-                f'${best_ev["estimated_support_cost"]:,.0f}</p></div>'
-                '<div class="exec-subcard"><div class="esl">No-support baseline</div>'
-                f'<div class="esv">{html.escape(rate_support_tier_label(0))}</div>'
-                f"<p class='exec-muted-small'><b>Predicted conversion:</b>{_hint(_hp)} "
-                f'{pc:.1%}</p>'
-                "<p class='exec-muted-small'><b>Est. support cost:</b>"
-                f"{_hint('Support economics at zero modeled buy-down and zero stacked rebates (baseline desk offer).')}"
-                f" ${current_support_cost:,.0f}</p></div>"
-                "</div>",
+                '<p class="exec-section-title" style="display:flex;align-items:center;gap:0.35rem;flex-wrap:wrap;">'
+                "Support allocation (recommended)"
+                f"{_hint('Split of modeled dollars between APR subsidy and stacked cash for the recommended package.')}"
+                "</p>",
                 unsafe_allow_html=True,
             )
+            st.markdown(rate_only_callout, unsafe_allow_html=True)
+            st.altair_chart(
+                chart_support_breakdown_recommended(recommended, cm),
+                use_container_width=True,
+            )
+
+            with st.expander("Technical lift detail (optional)", expanded=False):
+                # Avoid `$` next to `)` in markdown — Streamlit parses `$…$` as LaTeX and corrupts the line.
+                _ev = float(recommended["expected_value"])
+                st.markdown(
+                    f"- **Lift vs no-incentive baseline (same term):** "
+                    f"{recommended['conversion_lift_vs_baseline']:.2%}\n"
+                    f"- **Lift from APR subsidy (cash held fixed):** "
+                    f"{recommended['conversion_lift_vs_zero_apr_same_cash']:.2%}\n"
+                    f"- **Net deal outcome (USD):** `{_ev:,.0f}`\n"
+                    f"- **Support efficiency (lift ÷ spend):** {recommended['efficiency_score']:.4f}"
+                )
 
             st.caption(
-                "Recommendation maximizes constrained expected economic value "
-                "(not raw conversion)."
+                "Recommendation maximizes constrained **net deal outcome** — not raw conversion alone."
             )
 
     with tab_cmp:
         st.markdown(
-            '<p class="exec-muted">These charts summarize **every incentive package** the engine evaluated '
-            "(each dot = one scenario). **Green** marks the feasibility-aware **Recommended** package. "
-            "Each chart title has a **?** on the right — open it for a plain-English walkthrough. "
-            "The table at the bottom lists the same scenarios in spreadsheet form.</p>",
+            '<p class="exec-muted"><b>Offer analytics</b> — decision-support views over every incentive '
+            "package the engine evaluated. **Green** highlights the feasibility-aware **recommended** "
+            "scenario. Dollar figures are **total modeled support per scenario**, not monthly payment.</p>",
             unsafe_allow_html=True,
         )
-        with st.expander("How to read these four charts (start here)", expanded=False):
-            st.markdown(
-                """
-**Common bits**
-
-- **Dot** — One full scenario (rate support + cash mix + term, etc.).
-- **Green** — The package flagged as **Recommended** under your constraints.
-- **Estimated total support ($)** — **One modeled snapshot per scenario** (rate-buy-down estimate + stacked cash); **not** monthly payment, **not** GAAP.
-- **Expected value** — Roughly “conversion × margin − modeled support cost” — the optimizer’s economic lens.
-
-**Which chart when**
-
-| Chart | Use it to… |
-| ----- | ---------- |
-| **Expected value (ranked)** | See who wins on overall economics; best packages on the **left**. |
-| **Conversion vs support cost** | Ask “are we paying a lot for close rate?” — prefer **upper-left**. |
-| **Lift vs support cost** | Ask “does spend beat a no-incentive baseline?” — want **up** as you move **right**. |
-| **Expected value vs lift** | Balance **full economics** (height) vs **real uplift** vs baseline (horizontal). |
-
-Optional **single-lever** sensitivity charts below test **only dealer rate support** — handy sanity check, not the main multi-lever recommendation.
-"""
+        if (
+            optimization_meta is not None
+            and submitted
+            and not errs
+            and align_err is None
+        ):
+            om = optimization_meta
+            st.caption(
+                f"**Optimizer:** {om.get('search_mode', '—')} · "
+                f"**Scenarios evaluated:** {int(om.get('scenarios_evaluated', 0)):,} "
+                f"of {int(om.get('total_grid_scenarios', 0)):,} possible in the configured grid."
             )
         if not submitted:
-            st.info("Run analysis from the guided setup to load scenario charts.")
+            st.info("Run analysis from the guided setup to load charts and tables.")
         elif errs or align_err or enriched_multi is None:
-            st.warning(sim_err or "Complete inputs to view scenario charts.")
+            st.warning(sim_err or "Complete inputs to view offer analytics.")
         else:
             recommended_cmp = (
                 recommended_pkg
@@ -6581,139 +7317,66 @@ Optional **single-lever** sensitivity charts below test **only dealer rate suppo
                 else select_recommended_expected_value(enriched_multi)
             )
 
-            r1c1, r1c2 = st.columns(2)
-            with r1c1:
-                render_exploration_chart_card(
-                    "Expected value by scenario (ranked)",
-                    "Every dot is one package we tested. Left = best on economic score; green = recommended.",
-                    EXPLORATION_SCENARIO_CHART_HELP["ev_rank"],
-                    chart_expected_value_by_rank(enriched_multi, recommended_cmp),
-                )
-            with r1c2:
-                render_exploration_chart_card(
-                    "Conversion vs support cost",
-                    "Close rate (up) vs incentive dollars (across). Upper-left = strong conversion without runaway spend.",
-                    EXPLORATION_SCENARIO_CHART_HELP["conversion_vs_cost"],
-                    chart_conversion_vs_support_cost_scatter(
-                        enriched_multi, recommended_cmp
-                    ),
-                )
+            render_exploration_chart_card(
+                "Incentive ladder (primary)",
+                "Conversion (vertical) rises as total modeled support (horizontal) increases — "
+                "green marks the recommended efficient offer.",
+                OFFER_ANALYTICS_CHART_HELP["incentive_ladder"],
+                chart_incentive_ladder(enriched_multi, recommended_cmp, cm),
+            )
 
-            r2c1, r2c2 = st.columns(2)
-            with r2c1:
-                render_exploration_chart_card(
-                    "Lift vs support cost",
-                    "Spend moving right should lift conversion vs a no-rebate baseline — flat lines mean wasted dollars.",
-                    EXPLORATION_SCENARIO_CHART_HELP["lift_vs_cost"],
-                    chart_lift_vs_support_cost_scatter(enriched_multi, recommended_cmp),
-                )
-            with r2c2:
-                ev_vs_c = _finalize_exec_altair(
-                    alt.Chart(enriched_multi.assign(
-                        hl=np.where(
-                            scenario_rows_match(recommended_cmp, enriched_multi),
-                            "Recommended",
-                            "Other",
-                        )
-                    ))
-                    .mark_circle(
-                        size=42,
-                        opacity=0.9,
-                        stroke=_EXEC_CHART_POINT_MUTED_STROKE,
-                        strokeWidth=0.45,
-                    )
-                    .encode(
-                        x=alt.X(
-                            "conversion_lift_vs_baseline:Q",
-                            title="Lift vs no-incentive baseline (same term)",
-                        ),
-                        y=alt.Y("expected_value:Q", title="Expected value ($)"),
-                        color=alt.Color(
-                            "hl:N",
-                            scale=alt.Scale(
-                                domain=["Other", "Recommended"],
-                                range=[_EXEC_CHART_POINT_MUTED, _EXEC_CHART_REC_FILL],
-                            ),
-                            legend=None,
-                        ),
-                        tooltip=[
-                            alt.Tooltip("expected_value:Q", format=",.0f"),
-                            alt.Tooltip("conversion_probability:Q", format=".1%"),
-                            alt.Tooltip("dealer_rate_support_level:N"),
-                        ],
-                    )
-                    .properties(
-                        height=300,
-                        background=_EXEC_CHART_PANEL_BG,
-                        title=alt.TitleParams(
-                            text="Expected value vs lift vs baseline",
-                            subtitle=[
-                                "Height = economic score · Across = uplift vs selling with no incentives"
-                            ],
-                            fontSize=14,
-                            subtitleFontSize=11,
-                            subtitleColor="#64748b",
-                        ),
-                    )
+            dc1, dc2 = st.columns(2)
+            with dc1:
+                st.markdown(
+                    '<span class="exec-chart-pair-anchor" aria-hidden="true"></span>',
+                    unsafe_allow_html=True,
                 )
                 render_exploration_chart_card(
-                    "Expected value vs lift vs baseline",
-                    "Balances profit-like score (up) vs real uplift over a plain quote (across). Green = recommended.",
-                    EXPLORATION_SCENARIO_CHART_HELP["ev_vs_lift"],
-                    ev_vs_c,
+                    "Diminishing returns",
+                    "Incremental conversion vs prior step — steep early gains; shaded zones flag overspending.",
+                    OFFER_ANALYTICS_CHART_HELP["diminishing_returns"],
+                    chart_diminishing_returns(enriched_multi, recommended_cmp),
+                )
+            with dc2:
+                render_exploration_chart_card(
+                    "Support allocation (recommended)",
+                    "Where incentive dollars go for the recommended package — APR vs stacked cash.",
+                    OFFER_ANALYTICS_CHART_HELP["support_breakdown"],
+                    chart_support_breakdown_recommended(recommended_cmp, cm),
                 )
 
             st.markdown(
                 '<p class="exec-section-title" style="display:flex;align-items:center;gap:0.35rem;flex-wrap:wrap;">'
-                "Top 10 scenarios by expected value"
-                f"{_hint('Ranked by expected economic value within your search grid; green highlights the recommendation row where applicable.')}"
+                "Top scenarios by net deal outcome"
+                f"{_hint('Ranked by net deal outcome ($) within your search; muted green row = recommended package.')}"
                 "</p>",
                 unsafe_allow_html=True,
             )
-            top10 = enriched_multi.nlargest(10, "expected_value").copy()
-            disp10 = format_multi_lever_display(top10)
+            top25 = enriched_multi.nlargest(25, "expected_value").copy()
+            disp25 = format_multi_lever_display(top25, recommended_cmp)
 
-            def _highlight_top10(row: pd.Series) -> list[str]:
-                src = (
-                    int(row["Support level"]),
-                    float(row["Customer cash"]),
-                    float(row["Dealer cash"]),
-                    float(row["Loyalty cash"]),
-                    float(row["Conquest cash"]),
-                    int(row["Loan term (mo)"]),
-                )
-                tgt = (
-                    int(recommended_cmp["dealer_rate_support_level"]),
-                    float(recommended_cmp["customer_cash"]),
-                    float(recommended_cmp["dealer_cash"]),
-                    float(recommended_cmp["loyalty_cash"]),
-                    float(recommended_cmp["conquest_cash"]),
-                    int(recommended_cmp["loan_term"]),
-                )
-                if src == tgt:
+            def _highlight_exec_table(row: pd.Series) -> list[str]:
+                if row.get("Recommendation Status") == "Recommended efficient offer":
                     return ["background-color: #ecfdf5; font-weight: 600"] * len(row)
                 return [""] * len(row)
 
             fmt_ml: dict[str, str] = {
                 "Dealer APR": "{:.3f}",
-                "Dealer payment": "{:.0f}",
-                "Loan term (mo)": "{:.0f}",
-                "Loan amount": "${:,.0f}",
-                "Customer cash": "${:,.0f}",
-                "Dealer cash": "${:,.0f}",
-                "Loyalty cash": "${:,.0f}",
-                "Conquest cash": "${:,.0f}",
-                "Total cash rebate": "${:,.0f}",
-                "P(convert)": "{:.1%}",
-                "Est. support cost": "${:,.0f}",
-                "Lift vs no-incentive baseline": "{:.2%}",
-                "Lift from APR (same cash)": "{:.2%}",
-                "Expected value": "${:,.0f}",
-                "Efficiency score": "{:.4f}",
+                "Monthly Payment": "{:.0f}",
+                "Loan Term": "{:.0f}",
+                "OEM Cash": "${:,.0f}",
+                "Dealer Contribution": "${:,.0f}",
+                "Loyalty Incentive": "${:,.0f}",
+                "Conquest Incentive": "${:,.0f}",
+                "Total Support Cost": "${:,.0f}",
+                "Predicted Conversion": "{:.1%}",
+                "Remaining Margin": "${:,.0f}",
+                "Net Deal Outcome ($)": "${:,.0f}",
+                "Support Efficiency": "{:.4f}",
             }
 
             st.dataframe(
-                disp10.style.format(fmt_ml, na_rep="—").apply(_highlight_top10, axis=1),
+                disp25.style.format(fmt_ml, na_rep="—").apply(_highlight_exec_table, axis=1),
                 use_container_width=True,
                 hide_index=True,
             )
@@ -6726,12 +7389,12 @@ Optional **single-lever** sensitivity charts below test **only dealer rate suppo
             )
 
             with st.expander(
-                "Single-lever rate support sensitivity (optional baseline view)",
+                "APR-only sensitivity (reference)",
                 expanded=False,
             ):
                 st.caption(
-                    "Holds only **dealer rate support level** on the horizontal axis (legacy sweep). "
-                    "Primary recommendations use the multi-lever optimizer above."
+                    "Single-knob sweep on **dealer rate support** only — useful sanity check. "
+                    "Primary recommendations use the **multi-lever** search above."
                 )
                 st.caption(
                     "**Dollar figures:** **Estimated support cost** is a **total modeled snapshot per scenario** "
