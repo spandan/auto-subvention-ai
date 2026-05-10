@@ -1,7 +1,10 @@
 # Pinned for reproducible Railway/HF deploys and sklearn pickle compatibility.
+#
+# Python 3.13: pandas 2.2.2 has no cp313 wheels on Linux (pip falls back to sdist → meson
+# build failures). Use pandas>=2.2.3 and numpy 2.x so pip installs wheels only.
 streamlit==1.37.1
-pandas==2.2.2
-numpy==1.26.4
+pandas==2.2.3
+numpy==2.2.6
 scikit-learn==1.5.2
 lightgbm==4.5.0
 joblib==1.4.2
