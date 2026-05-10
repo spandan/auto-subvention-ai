@@ -1,0 +1,4 @@
+# OpenMP runtime for LightGBM wheels on slim Linux images (Railway / Nixpacks).
+# "..." keeps provider defaults and appends libgomp1.
+[phases.setup]
+aptPkgs = ["...", "libgomp1"]

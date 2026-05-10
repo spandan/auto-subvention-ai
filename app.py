@@ -1246,13 +1246,17 @@ def load_model():
     path = ROOT / "model_pipeline.pkl"
     if not path.is_file():
         raise FileNotFoundError(f"Model file not found: {path}")
+    # Register native extension + sklearn bindings before unpickling the pipeline.
+    import lightgbm  # noqa: F401
+    from lightgbm.sklearn import LGBMClassifier  # noqa: F401
+
     try:
         return joblib.load(path)
     except Exception as e:
         raise RuntimeError(
-            f"Could not unpickle model at {path}. "
-            "This artifact was built with scikit-learn 1.6.x (see requirements.txt); "
-            "install matching versions of scikit-learn and lightgbm."
+            f"Could not unpickle model at {path}: {type(e).__name__}: {e}. "
+            "Use scikit-learn==1.6.1 and lightgbm==4.5.0 (see requirements.txt). "
+            "On Linux deploys, install OpenMP (e.g. apt package libgomp1) if LightGBM fails to load."
         ) from e
 
 
