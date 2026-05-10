@@ -1251,7 +1251,8 @@ def load_model():
     except Exception as e:
         raise RuntimeError(
             f"Could not unpickle model at {path}. "
-            "Check scikit-learn/lightgbm versions match the training environment."
+            "This artifact was built with scikit-learn 1.6.x (see requirements.txt); "
+            "install matching versions of scikit-learn and lightgbm."
         ) from e
 
 
