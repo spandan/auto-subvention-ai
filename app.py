@@ -3385,6 +3385,20 @@ def _two_cols(wizard: bool):
     return stack, stack
 
 
+def _inline_md_bold_to_html(text: str) -> str:
+    """Allow ``**bold**`` in short UI strings embedded in HTML `<p>` (escape everything else)."""
+    if not text:
+        return ""
+    parts = re.split(r"\*\*(.+?)\*\*", text)
+    out: list[str] = []
+    for i, part in enumerate(parts):
+        if i % 2 == 0:
+            out.append(html.escape(part))
+        else:
+            out.append(f"<strong>{html.escape(part)}</strong>")
+    return "".join(out)
+
+
 def _help_plain_for_tooltip(
     help_md: str, *, max_len: int | None = 420
 ) -> str:
@@ -3427,6 +3441,73 @@ def _comparison_metric_row(label: str, value_html: str, help_md: str) -> str:
 def _labeled_hint(label: str, help_md: str) -> str:
     """Bold label + ? chip for inline summary lines."""
     return f"<b>{html.escape(label)}</b>{_hint(help_md)}"
+
+
+def _detail_line_with_hint(label: str, value_html: str, help_md: str) -> str:
+    """Label + ? + value on one row (expander / annex blocks). value_html may include safe markup."""
+    return (
+        f'<p class="exec-muted-small" style="margin:0 0 0.55rem 0;line-height:1.5;display:flex;'
+        f'flex-wrap:wrap;justify-content:space-between;gap:0.5rem;align-items:flex-start;">'
+        f'<span style="display:inline-flex;align-items:center;gap:0.28rem;flex-wrap:wrap;max-width:72%;">'
+        f"{_labeled_hint(label, help_md)}</span>"
+        f'<span style="font-weight:700;color:#0f172a;text-align:right;">{value_html}</span></p>'
+    )
+
+
+def _technical_lift_detail_html(rec: pd.Series) -> str:
+    """Expandable block: each derived metric with ? — how computed + why shown."""
+    ev = float(rec["expected_value"])
+    lv_b = float(rec["conversion_lift_vs_baseline"])
+    lv_apr = float(rec["conversion_lift_vs_zero_apr_same_cash"])
+    eff = float(rec["efficiency_score"])
+    esc = float(rec["estimated_support_cost"])
+
+    h_base = (
+        "**How:** model probability for the recommended package **minus** model probability for a "
+        "**zero-incentive** scenario at the **same loan term** (no rate buy-down and no stacked cash "
+        "in that baseline row). **Why:** anchors incremental conversion against a full strip baseline."
+    )
+    h_apr = (
+        "**How:** model probability for the recommended package **minus** probability when **rate support "
+        "is set to 0** while keeping **this row’s cash stack and term**—isolates the APR subsidy path. "
+        "**Why:** see how much lift comes from buy-down versus cash."
+    )
+    h_ev = (
+        "**How:** **predicted conversion × expected unit margin − total modeled support** "
+        "(`expected_value` in code). **Why:** ranks packages on **expected economic outcome** under "
+        "uncertainty (you only earn margin when the deal closes), not on gross margin if everyone signed."
+    )
+    h_eff = (
+        "**How:** **(conversion lift vs no-incentive baseline) ÷ max(estimated support cost, $1)** — "
+        "same lift as the first line, dollars from your support formula. **Why:** highlights packages "
+        "that buy a lot of probability lift per modeled incentive dollar."
+    )
+
+    ev_disp = f"<code>{ev:,.0f}</code> USD"
+    return (
+        '<div style="max-width:52rem;">'
+        + _detail_line_with_hint(
+            "Lift vs no-incentive baseline (same term)",
+            html.escape(f"{lv_b:.2%}"),
+            h_base,
+        )
+        + _detail_line_with_hint(
+            "Lift from APR subsidy (cash held fixed)",
+            html.escape(f"{lv_apr:.2%}"),
+            h_apr,
+        )
+        + _detail_line_with_hint(
+            "Net deal outcome (USD)",
+            ev_disp,
+            h_ev,
+        )
+        + _detail_line_with_hint(
+            "Support efficiency (lift ÷ spend)",
+            html.escape(f"{eff:.4f} (support ≈ {esc:,.0f} USD)"),
+            h_eff,
+        )
+        + "</div>"
+    )
 
 
 def _help_icon_html(help_md: str) -> str:
@@ -5725,10 +5806,46 @@ SIMULATOR_CHART_BLURBS = {
         "**Predicted close rate (up)** vs **rate-support step (across)** — cash stack fixed for this legacy sweep."
     ),
     "support_cost": (
-        "**Total modeled incentive dollars per scenario (up)** — **not** monthly payment; see **?** for the formula."
+        "**Total modeled incentive dollars per scenario (up)** — **not** monthly payment; "
+        "open the title **?** for the dollar formula."
     ),
     "efficiency": (
-        "**Lift per thousand dollars of modeled total support** — relative score along the ladder; see **?**."
+        "**Lift per thousand dollars of modeled total support** — relative score along the ladder; "
+        "open the title **?** for the efficiency definition."
+    ),
+}
+
+SIMULATOR_CHART_TITLE_HINT = {
+    "conversion": (
+        "**Across:** dealer rate support level (single knob swept). **Up:** predicted conversion (`predict_proba`). "
+        "**How:** only rate support moves—cash and other inputs fixed at your quote. **Why:** legacy single-lever "
+        "sanity check before trusting the multi-lever optimizer."
+    ),
+    "support_cost": (
+        "**Across:** dealer rate support level. **Up:** estimated total modeled support (USD). "
+        "**How:** `loan × (support ÷ 10,000) × calibration multiplier` **+** stacked OEM/dealer/loyalty/conquest cash "
+        "for that grid point. **Why:** dollars drive budget and net-deal math—not customer monthly payment."
+    ),
+    "efficiency": (
+        "**Across:** dealer rate support level. **Up:** efficiency score from this sweep. "
+        "**How:** `(conversion lift vs zero rate support × 100) ÷ max(estimated support ÷ 1,000, 0.01)` — "
+        "same lift definition as enrichment on the single-lever ladder. **Why:** spot where lift per modeled dollar peaks."
+    ),
+}
+
+OFFER_ANALYTICS_TITLE_HINT = {
+    "incentive_ladder": (
+        "**Across:** total modeled support per scenario (APR buy-down estimate + cash). **Up:** predicted conversion. "
+        "**How:** points sorted by support; smoothed line shows trajectory; green = recommended package. **Why:** see "
+        "where extra subsidy stops buying meaningful close rate."
+    ),
+    "diminishing_returns": (
+        "**Across:** total support cost. **Up:** incremental conversion vs the **next-cheaper** scenario (percentage points). "
+        "**How:** sorted ladder diffs; shaded bands flag efficient vs overspending zones. **Why:** locate diminishing returns on spend."
+    ),
+    "support_breakdown": (
+        "**Bars:** share of total modeled support for the **recommended** package—APR buy-down vs each cash stack. "
+        "**How:** same cost split logic as total support (multiplier on rate piece). **Why:** see whether the desk is APR-led vs cash-led."
     ),
 }
 
@@ -5767,24 +5884,28 @@ def render_exploration_chart_card(
     guide_one_liner: str,
     detail_markdown: str,
     chart: alt.Chart,
+    *,
+    analytics_key: str,
 ) -> None:
-    """Bordered card: title + **?** on same row, summary strip, full guide in popover."""
+    """Bordered card: title + inline **?** (axes / how calculated) + Quick read with rendered bold."""
     try:
         shell = st.container(border=True)
     except TypeError:
         shell = st.container()
     with shell:
-        title_col, help_col = st.columns([11.5, 2.5], gap="small")
-        with title_col:
-            st.markdown(
-                f'<p class="exec-chart-title-main">{html.escape(title)}</p>',
-                unsafe_allow_html=True,
-            )
-        with help_col:
-            with st.popover("?", help="Plain-language guide — axes and how to use this chart"):
-                st.markdown(detail_markdown)
+        title_hint = OFFER_ANALYTICS_TITLE_HINT.get(analytics_key, "")
+        title_html = (
+            f'<p class="exec-chart-title-main" style="display:flex;align-items:center;gap:0.35rem;'
+            f'flex-wrap:wrap;margin:0 0 0.35rem 0;">'
+            f"{html.escape(title)}{_hint(title_hint) if title_hint else ''}</p>"
+        )
+        st.markdown(title_html, unsafe_allow_html=True)
+        # Popover (not expander): charts may render inside another expander — Streamlit forbids nested expanders.
+        with st.popover("Full chart guide — axes, glossary & tips"):
+            st.markdown(detail_markdown)
+        qr = _inline_md_bold_to_html(guide_one_liner)
         st.markdown(
-            f'<p class="exec-chart-guide"><strong>Quick read:</strong> {html.escape(guide_one_liner)}</p>',
+            f'<p class="exec-chart-guide"><strong>Quick read:</strong> {qr}</p>',
             unsafe_allow_html=True,
         )
         st.altair_chart(chart, use_container_width=True)
@@ -5795,25 +5916,25 @@ def render_simulator_chart_with_axis_help(
     help_key: str,
     chart: alt.Chart,
 ) -> None:
-    """Chart title + **?** beside label; optional single-lever sweep context in guide."""
+    """Chart title + inline **?**; Quick read renders **bold**; full axis guide in expander."""
     try:
         outer = st.container(border=True)
     except TypeError:
         outer = st.container()
     with outer:
-        title_col, help_col = st.columns([11.5, 2.5], gap="small")
-        with title_col:
-            st.markdown(
-                f'<p class="exec-chart-title-main" style="font-size:0.98rem !important;">'
-                f"{html.escape(title)}</p>",
-                unsafe_allow_html=True,
-            )
-        with help_col:
-            with st.popover("?", help="Plain-language guide — axes for this sensitivity chart"):
-                st.markdown(SIMULATOR_CHART_AXIS_HELP[help_key])
+        th = SIMULATOR_CHART_TITLE_HINT.get(help_key, "")
         st.markdown(
-            f'<p class="exec-chart-guide"><strong>Quick read:</strong> '
-            f"{html.escape(SIMULATOR_CHART_BLURBS[help_key])}</p>",
+            f'<p class="exec-chart-title-main" style="font-size:0.98rem !important;display:flex;'
+            f'align-items:center;gap:0.35rem;flex-wrap:wrap;margin:0 0 0.35rem 0;">'
+            f"{html.escape(title)}{_hint(th) if th else ''}</p>",
+            unsafe_allow_html=True,
+        )
+        # Popover (not expander): APR-only charts sit inside `APR-only sensitivity (reference)` expander.
+        with st.popover("Full chart guide — axes, glossary & tips"):
+            st.markdown(SIMULATOR_CHART_AXIS_HELP[help_key])
+        qr = _inline_md_bold_to_html(SIMULATOR_CHART_BLURBS[help_key])
+        st.markdown(
+            f'<p class="exec-chart-guide"><strong>Quick read:</strong> {qr}</p>',
             unsafe_allow_html=True,
         )
         st.altair_chart(chart, use_container_width=False)
@@ -6412,6 +6533,84 @@ def chart_diminishing_returns(
     )
 
 
+# Tooltips for “Top scenarios by net deal outcome” — Streamlit column header (?) popovers.
+_NET_DEAL_SCENARIO_COLUMN_HELP: dict[str, str] = {
+    "Support Package": (
+        "**How:** Built from this row’s **bps buy-down**, each **cash stack** piece shown only if ≥ $1, "
+        "and **loan term** (`support_package_label`). **Why:** gives a scannable handle for a grid row "
+        "without opening raw lever columns."
+    ),
+    "Dealer APR": (
+        "**How:** `max(0.5%, standard_apr − dealer_rate_support_level/100)` after applying that row’s "
+        "buy-down. **Why:** customer-facing rate drives payment and model features for that scenario."
+    ),
+    "Monthly Payment": (
+        "**How:** Standard amortization on this row’s **scenario loan amount**, **Dealer APR**, and "
+        "**Loan Term**. **Why:** matches what appears on a desk quote for that structure."
+    ),
+    "Loan Term": (
+        "**How:** Taken from the multi-lever grid / optimizer for that scenario. **Why:** term changes "
+        "payment, baseline conversion at zero incentive, and feasibility checks."
+    ),
+    "OEM Cash": (
+        "**How:** Optimizer-selected OEM/customer rebate dollars on this row (input lever). **Why:** cash "
+        "is additive to total modeled support and reduces financed principal vs baseline when applicable."
+    ),
+    "Dealer Contribution": (
+        "**How:** Dealer cash component for this row. **Why:** counts toward total support and model cash "
+        "features."
+    ),
+    "Loyalty Incentive": (
+        "**How:** Loyalty rebate dollars for this row. **Why:** same as other cash levers—stacked into "
+        "total support."
+    ),
+    "Conquest Incentive": (
+        "**How:** Conquest rebate dollars for this row. **Why:** same—full incentive snapshot for the "
+        "scenario."
+    ),
+    "Total Support Cost": (
+        "**How:** `loan_amount × (support_level ÷ 10,000) × support_cost_multiplier` **+** OEM + dealer + "
+        "loyalty + conquest cash for this row (`estimate_support_cost` path). **Why:** single dollar score "
+        "for incentive load vs budget and margin floors—not monthly payment."
+    ),
+    "Predicted Conversion": (
+        "**How:** Classifier `predict_proba` positive class after `calculate_model_features` → "
+        "`align_to_schema`. **Why:** drives ranking with economics—same definition across dashboard."
+    ),
+    "Remaining Margin": (
+        "**How:** Your **expected unit margin** input **minus** **Total Support Cost** for this row. "
+        "**Why:** quick directional gross after incentives for desk trade-offs (not GAAP)."
+    ),
+    "Net Deal Outcome ($)": (
+        "**How:** `expected_value` = **Predicted Conversion × expected unit margin − Total Support Cost**. "
+        "**Why:** expected-value style ranking—weights margin by chance to close and subtracts all modeled "
+        "incentive dollars; primary objective for the recommended package."
+    ),
+    "Support Efficiency": (
+        "**How:** `(conversion probability lift vs no-incentive baseline at same term) ÷ max(total "
+        "support cost, 1 USD)` — `efficiency_score` in code. **Why:** highlights lift bought per dollar "
+        "of modeled support."
+    ),
+    "Recommendation Status": (
+        "**How:** Row matches the **constrained** optimizer’s chosen package → “Recommended efficient "
+        "offer”; else “Alternative package.” **Why:** tells which row is the official recommendation "
+        "from the same search."
+    ),
+}
+
+
+def _net_deal_scenarios_column_config() -> dict[str, Any]:
+    """Column headers + ? help for the net-deal-outcome scenario table."""
+    cc = st.column_config
+    out: dict[str, Any] = {}
+    for name, help_md in _NET_DEAL_SCENARIO_COLUMN_HELP.items():
+        if name in ("Support Package", "Recommendation Status"):
+            out[name] = cc.TextColumn(help=help_md)
+        else:
+            out[name] = cc.NumberColumn(help=help_md)
+    return out
+
+
 def format_multi_lever_display(
     df: pd.DataFrame,
     rec: pd.Series | None = None,
@@ -6512,22 +6711,25 @@ def render_three_scenario_comparison_html(
     rem_a: float,
 ) -> str:
     _h_prob = (
-        "Modeled probability this finance structure closes (`predict_proba`). "
-        "Same definition as elsewhere — **not** a guaranteed close rate."
+        "**How:** Classifier `predict_proba` on features built for each scenario row. "
+        "**Why:** Comparable close odds across Current / Recommended / Aggressive."
     )
     _h_sup = (
-        "Total **modeled** incentive dollars: APR buy-down estimate plus OEM/customer, dealer, "
-        "loyalty, and conquest cash for **this** scenario."
+        "**How:** `loan_amount × (support_level ÷ 10,000) × multiplier +` stacked cash components "
+        "(`estimate_support_cost` path for desk inputs; optimizer row uses scenario loan/cash). "
+        "**Why:** One incentive-dollar figure for comparing packages."
     )
     _h_pay = (
-        "Estimated monthly payment from **APR**, **term**, and **amount financed** for this scenario."
+        "**How:** Amortization from scenario **loan amount**, **Dealer APR**, and **term**. "
+        "**Why:** Desk-visible monthly payment for that structure."
     )
     _h_apr = (
-        "Customer-facing annual rate after applying this scenario’s structure and rate support."
+        "**How:** `max(0.5%, standard_apr − support_level/100)` after applying scenario levers. "
+        "**Why:** Customer-facing annual rate driving payment and model inputs."
     )
     _h_rem = (
-        "**Expected unit gross** you entered minus **estimated support** — rough gross after "
-        "incentives for desk discussion."
+        "**How:** Your **expected unit margin** input minus **total support cost** for that column’s "
+        "scenario. **Why:** Directional gross after incentives—not GAAP."
     )
 
     def card(
@@ -7082,19 +7284,30 @@ def main():
                     st.metric(
                         "Predicted conversion (current offer)",
                         f"{prob_current:.1%}",
-                        help="Modeled close probability for the **submitted** finance quote.",
+                        help=(
+                            "**How:** Classifier `predict_proba` after aligning **your current desk** inputs. "
+                            "**Why:** Baseline close probability before comparing optimizer packages."
+                        ),
                     )
                 with snap_b:
                     st.metric(
                         "Likelihood band",
                         likelihood_band(prob_current),
-                        help="Quick qualitative read on modeled close probability.",
+                        help=(
+                            "**How:** Maps modeled probability to **Low / Moderate / High** using fixed "
+                            "cutoffs (`likelihood_band`: below 35%, 35–65%, above 65%). **Why:** Fast read "
+                            "without interpreting decimals."
+                        ),
                     )
                 with snap_c:
                     st.metric(
                         "Competitive position",
                         headline,
-                        help="Versus the modeled competitor on APR, payment, and cash.",
+                        help=(
+                            "**How:** Buckets modeled **APR gap vs competitor** (`apr_gap_bps`) into Dealer "
+                            "Advantage / Neutral / Competitor Advantage. **Why:** One-line headline before "
+                            "you inspect payment and cash deltas."
+                        ),
                     )
                 st.markdown(
                     f'<p class="exec-muted-small">{html.escape(plain)}</p>',
@@ -7106,8 +7319,9 @@ def main():
                         "Rate position vs. competitor",
                         f"{apr_pts:+.2f} pts",
                         help=(
-                            "Signed gap between your modeled dealer APR and the competitor APR "
-                            "(percentage points; negative means you are cheaper)."
+                            "**How:** `(your dealer APR − competitor APR)` expressed as **percentage points** "
+                            "(implementation: `apr_gap_bps / 100`). **Why:** Same APR units as the desk; "
+                            "**negative** usually means your rate is lower."
                         ),
                     )
                 with m2:
@@ -7115,8 +7329,8 @@ def main():
                         "Monthly payment difference",
                         f"${payment_adv:+,.0f}",
                         help=(
-                            "Monthly payment gap vs competitor on comparable structure "
-                            "(positive = customer pays more at your desk)."
+                            "**How:** Your modeled payment minus competitor payment (`payment_gap`). "
+                            "**Why:** Shows monthly cash-flow delta on the comparable structure."
                         ),
                     )
                 with m3:
@@ -7124,19 +7338,27 @@ def main():
                         "Cash incentive difference",
                         f"${rebate_adv:+,.0f}",
                         help=(
-                            "Total visible cash/rebate gap vs competitor (OEM + dealer + "
-                            "loyalty/conquest where modeled)."
+                            "**How:** Your total modeled visible cash stack minus competitor cashback "
+                            "(`cashback_gap`). **Why:** Captures rebate competitiveness alongside rate/payment."
                         ),
                     )
                 st.metric(
                     "Estimated total support (current desk inputs)",
                     f"${desk_support_cost:,.0f}",
-                    help="Modeled support at your **entered** rate-support tier plus stacked cash.",
+                    help=(
+                        "**How:** `loan_amount × (your support_level ÷ 10,000) × support_cost_multiplier` "
+                        "**+** OEM + dealer + loyalty + conquest cash from **submitted** desk inputs "
+                        "(`estimate_support_cost`). **Why:** Dollar load of incentives before optimization."
+                    ),
                 )
                 st.metric(
                     "Zero‑incentive reference (model anchor)",
                     f"${current_support_cost:,.0f}",
-                    help="Support cost with **zero** rate buy-down — useful benchmark only.",
+                    help=(
+                        "**How:** Same support-cost formula with **rate support level forced to 0** "
+                        "(cash unchanged). **Why:** Anchor for how much spend sits in APR buy-down vs a "
+                        "no-buy-down baseline."
+                    ),
                 )
                 st.divider()
 
@@ -7152,57 +7374,58 @@ def main():
                 '<div class="exec-hero-metric-tile exec-hero-metric-rec">'
                 + _hero_metric_label(
                     "Recommended conversion",
-                    "Predicted probability the customer accepts **this recommended** finance package "
-                    "(from the model’s `predict_proba` — not a guarantee).",
+                    "**How:** `predict_proba` on aligned features for the **recommended efficient** package. "
+                    "**Why:** Primary success metric for that structure vs your baseline.",
                 )
                 + f'<p class="ehm-value">{recommended["conversion_probability"]:.1%}</p>'
                 + '<p class="ehm-sub">Share of deals modeled to close at this offer.</p></div>'
                 '<div class="exec-hero-metric-tile exec-hero-metric-rec">'
                 + _hero_metric_label(
                     "Lift vs current offer",
-                    "Extra predicted conversion **versus your submitted desk quote** (same model). "
-                    "**pp** = **percentage points**: take the two probabilities as numbers and subtract. "
-                    "Example: 58% vs 73.1% → **+15.1 pp** (73.1 − 58), not “15.1% of 58%.”",
+                    "**How:** Recommended conversion probability **minus** probability on **submitted** desk "
+                    "inputs, ×100 → **percentage points** (subtract probabilities as numbers, not percent "
+                    "change). **Why:** Shows incremental close odds from moving to the recommended package.",
                 )
                 + f'<p class="ehm-value">{lift_vs_desk_pp:+.1f} pp</p>'
                 + "<p class=\"ehm-sub\">Points added to close rate vs current-offer estimate.</p></div>"
                 '<div class="exec-hero-metric-tile exec-hero-metric-rec">'
                 + _hero_metric_label(
                     "Estimated support cost",
-                    "Total **modeled** incentive dollars for this package: APR buy-down estimate "
-                    "(loan × support bps × calibration) **plus** OEM/customer, dealer, loyalty, and "
-                    "conquest cash. One-time snapshot — **not** the customer’s monthly payment.",
+                    "**How:** `scenario loan × (support_level ÷ 10,000) × calibration multiplier +` all "
+                    "stacked cash on the recommended row. **Why:** Full-dollar incentive load used in budget "
+                    "and net-deal math—not monthly payment.",
                 )
                 + f'<p class="ehm-value">${recommended["estimated_support_cost"]:,.0f}</p>'
                 + '<p class="ehm-sub">Full-package incentive economics.</p></div>'
                 '<div class="exec-hero-metric-tile exec-hero-metric-rec">'
                 + _hero_metric_label(
                     "Estimated remaining margin",
-                    "**Expected unit gross** you entered minus **estimated support cost** for this "
-                    "scenario — directional for desk discussion, not GAAP.",
+                    "**How:** **Expected unit margin** (your input) **−** **estimated support cost** for the "
+                    "recommended scenario. **Why:** Quick gross-after-incentive sanity check on the desk.",
                 )
                 + f'<p class="ehm-value">${rem_m:,.0f}</p>'
                 + '<p class="ehm-sub">Rough gross after incentives.</p></div>'
                 '<div class="exec-hero-metric-tile exec-hero-metric-rec">'
                 + _hero_metric_label(
                     "Recommended dealer APR",
-                    "Customer-facing annual rate after applying this scenario’s **rate support** "
-                    "and structure (modeled).",
+                    "**How:** Standard APR minus buy-down (`support_level / 100` percentage points), "
+                    "floored at **0.5%**. **Why:** Rate shown to the customer for the recommended structure.",
                 )
                 + f'<p class="ehm-value">{recommended["scenario_dealer_apr"]:.3f}%</p>'
                 + '<p class="ehm-sub">Subvented APR on the quote.</p></div>'
                 '<div class="exec-hero-metric-tile exec-hero-metric-rec">'
                 + _hero_metric_label(
                     "Estimated monthly payment",
-                    "Monthly payment implied by recommended **APR**, **term**, and **amount financed** "
-                    "for this scenario.",
+                    "**How:** Payment from amortizing **scenario loan amount** at **recommended APR** over "
+                    "**loan term**. **Why:** Desk payment for that quote.",
                 )
                 + f'<p class="ehm-value">${recommended["scenario_dealer_monthly_payment"]:,.0f}</p>'
                 + '<p class="ehm-sub">Desk payment for this structure.</p></div>'
                 '<div class="exec-hero-metric-tile exec-hero-metric-rec">'
                 + _hero_metric_label(
                     "Recommended loan term",
-                    "Finance length **in months** for this recommended package within your allowed terms.",
+                    "**How:** Term from the optimizer’s chosen package within your allowed term grid. "
+                    "**Why:** Drives payment, baseline conversion at zero incentive, and feasibility.",
                 )
                 + f'<p class="ehm-value">{int(recommended["loan_term"])} mo</p>'
                 + '<p class="ehm-sub">Contract length.</p></div>'
@@ -7272,16 +7495,7 @@ def main():
             )
 
             with st.expander("Technical lift detail (optional)", expanded=False):
-                # Avoid `$` next to `)` in markdown — Streamlit parses `$…$` as LaTeX and corrupts the line.
-                _ev = float(recommended["expected_value"])
-                st.markdown(
-                    f"- **Lift vs no-incentive baseline (same term):** "
-                    f"{recommended['conversion_lift_vs_baseline']:.2%}\n"
-                    f"- **Lift from APR subsidy (cash held fixed):** "
-                    f"{recommended['conversion_lift_vs_zero_apr_same_cash']:.2%}\n"
-                    f"- **Net deal outcome (USD):** `{_ev:,.0f}`\n"
-                    f"- **Support efficiency (lift ÷ spend):** {recommended['efficiency_score']:.4f}"
-                )
+                st.markdown(_technical_lift_detail_html(recommended), unsafe_allow_html=True)
 
             st.caption(
                 "Recommendation maximizes constrained **net deal outcome** — not raw conversion alone."
@@ -7323,6 +7537,7 @@ def main():
                 "green marks the recommended efficient offer.",
                 OFFER_ANALYTICS_CHART_HELP["incentive_ladder"],
                 chart_incentive_ladder(enriched_multi, recommended_cmp, cm),
+                analytics_key="incentive_ladder",
             )
 
             dc1, dc2 = st.columns(2)
@@ -7336,6 +7551,7 @@ def main():
                     "Incremental conversion vs prior step — steep early gains; shaded zones flag overspending.",
                     OFFER_ANALYTICS_CHART_HELP["diminishing_returns"],
                     chart_diminishing_returns(enriched_multi, recommended_cmp),
+                    analytics_key="diminishing_returns",
                 )
             with dc2:
                 render_exploration_chart_card(
@@ -7343,6 +7559,7 @@ def main():
                     "Where incentive dollars go for the recommended package — APR vs stacked cash.",
                     OFFER_ANALYTICS_CHART_HELP["support_breakdown"],
                     chart_support_breakdown_recommended(recommended_cmp, cm),
+                    analytics_key="support_breakdown",
                 )
 
             st.markdown(
@@ -7375,10 +7592,16 @@ def main():
                 "Support Efficiency": "{:.4f}",
             }
 
+            _nd_cfg = {
+                k: v
+                for k, v in _net_deal_scenarios_column_config().items()
+                if k in disp25.columns
+            }
             st.dataframe(
                 disp25.style.format(fmt_ml, na_rep="—").apply(_highlight_exec_table, axis=1),
                 use_container_width=True,
                 hide_index=True,
+                column_config=_nd_cfg,
             )
 
             st.markdown(
