@@ -8,8 +8,11 @@ from __future__ import annotations
 import copy
 import html
 import itertools
+import os
 import re
 import json
+import sys
+import traceback
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -1243,7 +1246,13 @@ def load_model():
     path = ROOT / "model_pipeline.pkl"
     if not path.is_file():
         raise FileNotFoundError(f"Model file not found: {path}")
-    return joblib.load(path)
+    try:
+        return joblib.load(path)
+    except Exception as e:
+        raise RuntimeError(
+            f"Could not unpickle model at {path}. "
+            "Check scikit-learn/lightgbm versions match the training environment."
+        ) from e
 
 
 @st.cache_data(show_spinner=False)
@@ -1277,6 +1286,76 @@ def get_sample_defaults() -> dict:
     if not isinstance(raw, dict):
         raise ValueError("sample_input.json must be a JSON object (key → value).")
     return raw
+
+
+def _deployment_startup_gate() -> None:
+    """
+    Railway-oriented checks: artifact paths, eager load of model/schema for health,
+    and diagnostics (no changes to ML or optimization logic).
+    """
+    required_files = ["model_pipeline.pkl", "feature_schema.json"]
+    missing = [f for f in required_files if not (ROOT / f).is_file()]
+
+    if missing:
+        st.error(f"Missing required deployment files: {missing}")
+        st.stop()
+
+    pipeline_loaded = False
+    schema_loaded = False
+    feature_count: int | None = None
+
+    try:
+        load_model()
+        pipeline_loaded = True
+    except Exception as e:
+        st.error(f"Failed to load ML pipeline: {e}")
+        with st.expander("Traceback"):
+            st.code(traceback.format_exc())
+        st.stop()
+
+    try:
+        sch = get_feature_schema()
+        schema_loaded = True
+        rc = sch.get("required_columns")
+        if isinstance(rc, list):
+            feature_count = len(rc)
+    except ValueError as e:
+        st.error(str(e))
+        with st.expander("Traceback"):
+            st.code(traceback.format_exc())
+        st.stop()
+
+    with st.expander("Deployment Health", expanded=False):
+        st.write("Python version:", sys.version)
+        st.write("Working directory:", os.getcwd())
+        try:
+            st.write("Files (cwd):", sorted(os.listdir("."))[:100])
+        except OSError as exc:
+            st.write("Files (cwd): unreadable", str(exc))
+        st.write("App root:", str(ROOT))
+        st.write("model_pipeline.pkl exists:", (ROOT / "model_pipeline.pkl").is_file())
+        st.write("feature_schema.json exists:", (ROOT / "feature_schema.json").is_file())
+        st.write(
+            "Environment:",
+            os.environ.get("RAILWAY_ENVIRONMENT")
+            or os.environ.get("RAILWAY_PROJECT_NAME")
+            or os.environ.get("ENV")
+            or "local",
+        )
+        try:
+            st.write("Streamlit:", getattr(st, "__version__", "unknown"))
+        except Exception:
+            st.write("Streamlit: unknown")
+        try:
+            import sklearn
+
+            st.write("scikit-learn:", sklearn.__version__)
+        except Exception as exc:
+            st.write("scikit-learn:", f"(import failed: {exc})")
+        st.write("Model loaded:", pipeline_loaded)
+        st.write("Schema loaded:", schema_loaded)
+        st.write("Feature count:", feature_count if feature_count is not None else "—")
+        st.write("Inference row count:", 1)
 
 
 # ---------------------------------------------------------------------------
@@ -6010,6 +6089,8 @@ def main():
     st.markdown(EXEC_FONT_LINKS(), unsafe_allow_html=True)
     st.markdown(EXEC_THEME_CSS(), unsafe_allow_html=True)
 
+    _deployment_startup_gate()
+
     if not st.session_state.analysis_submitted:
         st.markdown(EXEC_WIZARD_DEMO_UI_CSS(), unsafe_allow_html=True)
         render_full_page_wizard()
@@ -6052,6 +6133,8 @@ def main():
     except Exception as e:
         blocking_overlay.empty()
         st.error(f"Failed to load model: {e}")
+        with st.expander("Model load traceback"):
+            st.code(traceback.format_exc())
         st.stop()
 
     cm = float(st.session_state.sb_cost_multiplier)
