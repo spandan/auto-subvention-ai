@@ -84,6 +84,43 @@ class _EditDrawer:
 EDIT_DRAWER = _EditDrawer()
 
 
+def _element_alive_for_current_client(el: Any) -> bool:
+    """True if element exists, is not deleted, and belongs to the active browser session."""
+    if el is None:
+        return False
+    try:
+        if el.is_deleted:
+            return False
+    except Exception:
+        return False
+    try:
+        return el.client.id == ui.context.client.id
+    except RuntimeError:
+        return False
+
+
+def _edit_drawer_bound_to_current_client() -> bool:
+    """Dialog + inner nodes must all be live; dialog alone can look OK while body_col is stale."""
+    return all(
+        _element_alive_for_current_client(x)
+        for x in (EDIT_DRAWER.dialog, EDIT_DRAWER.title, EDIT_DRAWER.body_col)
+    )
+
+
+def _tear_down_edit_drawer() -> None:
+    dlg = EDIT_DRAWER.dialog
+    EDIT_DRAWER.dialog = None
+    EDIT_DRAWER.title = None
+    EDIT_DRAWER.body_col = None
+    if dlg is None:
+        return
+    try:
+        if not dlg.is_deleted:
+            dlg.delete()
+    except Exception:
+        pass
+
+
 EDIT_SECTION_LABELS: dict[str, str] = {
     "customer": "Customer profile",
     "vehicle": "Vehicle & financing inputs",
@@ -94,8 +131,9 @@ EDIT_SECTION_LABELS: dict[str, str] = {
 
 
 def ensure_edit_dialog() -> None:
-    if EDIT_DRAWER.dialog is not None:
+    if _edit_drawer_bound_to_current_client():
         return
+    _tear_down_edit_drawer()
     with ui.dialog() as dlg:
         EDIT_DRAWER.dialog = dlg
         with ui.card().classes("w-full").style(
@@ -126,16 +164,26 @@ def ensure_edit_dialog() -> None:
 
 def open_edit_section(section: str) -> None:
     """Open modal with a single wizard section for post-results edits."""
-    ensure_edit_dialog()
-    assert EDIT_DRAWER.body_col is not None
-    assert EDIT_DRAWER.title is not None
-    assert EDIT_DRAWER.dialog is not None
     MODEL.state["dashboard_edit_section"] = section
-    EDIT_DRAWER.title.text = EDIT_SECTION_LABELS.get(section, section.replace("_", " ").title())
-    EDIT_DRAWER.body_col.clear()
-    with EDIT_DRAWER.body_col:
-        render_section_for_edit(MODEL.state, section, lambda: None)
-    EDIT_DRAWER.dialog.open()
+    for attempt in range(2):
+        ensure_edit_dialog()
+        assert EDIT_DRAWER.body_col is not None
+        assert EDIT_DRAWER.title is not None
+        assert EDIT_DRAWER.dialog is not None
+        EDIT_DRAWER.title.text = EDIT_SECTION_LABELS.get(
+            section, section.replace("_", " ").title()
+        )
+        try:
+            EDIT_DRAWER.body_col.clear()
+        except RuntimeError as e:
+            if attempt == 0 and "deleted" in str(e).lower():
+                _tear_down_edit_drawer()
+                continue
+            raise
+        with EDIT_DRAWER.body_col:
+            render_section_for_edit(MODEL.state, section, lambda: None)
+        EDIT_DRAWER.dialog.open()
+        return
 
 
 def go_to_wizard() -> None:
@@ -341,7 +389,7 @@ def index() -> None:
             ui.label(traceback.format_exc()).classes("text-xs font-mono whitespace-pre-wrap")
         return
 
-    ensure_edit_dialog()
+    # Edit drawer is built lazily in open_edit_section so it always matches the active client.
     LOADING_OVERLAY.build()
 
     with ui.header(elevated=False).style(

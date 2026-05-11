@@ -454,7 +454,7 @@ def render_left_summary_panel(
             for sec, lbl in qa:
                 ui.button(
                     lbl,
-                    on_click=lambda _, s=sec: open_edit(s),
+                    on_click=lambda *_, s=sec: open_edit(s),
                 ).props("flat dense no-caps").classes("rail-edit-btn")
 
     # --- Run ---
