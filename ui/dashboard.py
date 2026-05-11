@@ -520,7 +520,7 @@ def render_left_summary_panel(
         with ui.element("div").classes("rail-run-stack"):
             ui.button(
                 "Re-run Optimization",
-                on_click=lambda: run_analysis(),
+                on_click=run_analysis,
             ).props(
                 "unelevated dense no-caps"
             ).classes("btn-dash btn-dash-primary")

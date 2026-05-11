@@ -8,14 +8,15 @@ Railway: respects PORT environment variable.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
+import time
 import traceback
 import warnings
 from typing import Any
 
 import pandas as pd
 from nicegui import Client, run, ui
-from nicegui.background_tasks import create as create_background_task
 
 from services.feature_engineering import (
     build_business_inputs,
@@ -41,6 +42,23 @@ from ui.dashboard import render_dashboard
 from ui.loading_overlay import OptimizationLoadingOverlay
 from ui.theme import PAGE_MAX_W, PAGE_RESULTS_MAX_W, theme_css
 from ui.wizard import render_section_for_edit, render_wizard
+
+logger = logging.getLogger(__name__)
+
+
+def _ensure_app_run_logger() -> None:
+    """Emit INFO for run/optimize lifecycle even when the root logger is quiet (e.g. some uvicorn setups)."""
+    if logger.handlers:
+        return
+    _h = logging.StreamHandler()
+    _h.setLevel(logging.INFO)
+    _h.setFormatter(logging.Formatter("%(levelname)s [subvention] %(message)s"))
+    logger.addHandler(_h)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+
+
+_ensure_app_run_logger()
 
 
 class AppModel:
@@ -224,6 +242,11 @@ def _optimization_worker() -> dict[str, Any]:
     Heavy work for thread pool (keeps UI event loop responsive).
     Reads latest inputs from MODEL.state.
     """
+    _t0 = time.perf_counter()
+    logger.info(
+        "[OPT] optimization_worker: thread start (pipeline loaded=%s)",
+        MODEL.pipeline is not None,
+    )
     # sklearn 1.6 emits FutureWarnings on each predict (very noisy under large grids).
     warnings.filterwarnings(
         "ignore",
@@ -245,6 +268,11 @@ def _optimization_worker() -> dict[str, Any]:
         MODEL.demo_defaults,
     )
     if err or df is None:
+        logger.warning(
+            "[OPT] optimization_worker: scenario search failed: %s (wall=%.3fs)",
+            err,
+            time.perf_counter() - _t0,
+        )
         return {"ok": False, "error": err or "Optimization failed."}
 
     rec, feasible, relaxed = select_recommended_constrained(
@@ -272,6 +300,13 @@ def _optimization_worker() -> dict[str, Any]:
     else:
         baseline_p = float(p0)
 
+    logger.info(
+        "[OPT] optimization_worker: finished rows=%d feasible=%d relaxed=%s wall=%.3fs",
+        len(df),
+        len(feasible),
+        relaxed,
+        time.perf_counter() - _t0,
+    )
     return {
         "ok": True,
         "df": df,
@@ -284,38 +319,62 @@ def _optimization_worker() -> dict[str, Any]:
     }
 
 
-def run_analysis() -> None:
-    """Schedule optimization — must run from a NiceGUI click handler so `client` exists."""
-    client = ui.context.client
-    MODEL.last_error = None
-
-    # Show loading first, synchronously in this handler, so the next WS flush can include it
-    # as soon as this function returns. The optimizer cannot run synchronously here: it would
-    # block the asyncio event loop (no outbound messages, frozen UI, client timeouts). Work
-    # stays in a thread via `run.io_bound`; only UI updates use `with client:` in the async task.
-    LOADING_OVERLAY.open()
-
-    # Avoid stacked Quasar modals: edit drawer backdrop can block the loading overlay and
-    # trigger aria-hidden/focus warnings until another click clears focus.
-    try:
-        if EDIT_DRAWER.dialog is not None and not EDIT_DRAWER.dialog.is_deleted:
-            EDIT_DRAWER.dialog.close()
-    except Exception:
-        pass
-    _tear_down_edit_drawer()
-
-    create_background_task(_run_analysis_async(client), name="run_analysis")
-
-
-async def _run_analysis_async(client: Client) -> None:
-    """All `ui.*` / refreshable updates run under `client` (background tasks have empty slot stack)."""
+async def _overlay_pulse(client: Client, message: str, progress: float) -> None:
+    """Apply overlay milestone + yield so the browser can render before heavy steps."""
     with client:
-        # Yield first so the browser can paint the overlay opened from the click handler before
-        # any synchronous validation or thread-pool work competes for the same loop turn.
-        await asyncio.sleep(0)
+        LOADING_OVERLAY.set_phase(message, progress)
+    await asyncio.sleep(0.02)
 
+
+async def run_analysis() -> None:
+    """Run optimization from the UI: async so we can await paint yields before heavy work."""
+    client = ui.context.client
+    t0 = time.perf_counter()
+
+    def _dt() -> float:
+        return time.perf_counter() - t0
+
+    MODEL.last_error = None
+    logger.info("[OPT] click client_id=%s", getattr(client, "id", "?"))
+
+    try:
+        LOADING_OVERLAY.open()
+        logger.info("[OPT] overlay opened Δt=%.3fs", _dt())
+
+        await asyncio.sleep(0)
+        await asyncio.sleep(0.1)
+        logger.info("[OPT] post paint-yield Δt=%.3fs", _dt())
+
+        try:
+            if EDIT_DRAWER.dialog is not None and not EDIT_DRAWER.dialog.is_deleted:
+                EDIT_DRAWER.dialog.close()
+        except Exception:
+            pass
+        _tear_down_edit_drawer()
+
+        await _run_optimization_pipeline(client, t0)
+    except Exception:
+        logger.exception("[OPT] run_analysis failed Δt=%.3fs", _dt())
+        try:
+            with client:
+                LOADING_OVERLAY.close()
+                MODEL.last_error = "Internal error while running optimization (see server logs)."
+                ui.notify(MODEL.last_error, type="negative", multi_line=True)
+                main_body.refresh()
+        except Exception:
+            logger.exception("[OPT] recovery UI failed")
+
+
+async def _run_optimization_pipeline(client: Client, t0: float) -> None:
+    """Validation, thread-pool optimization, then dashboard refresh — all under cooperative yields."""
+    def _dt() -> float:
+        return time.perf_counter() - t0
+
+    with client:
+        await asyncio.sleep(0)
         errs, warns = _run_input_validation()
         if errs:
+            logger.info("[OPT] validation failed Δt=%.3fs", _dt())
             LOADING_OVERLAY.close()
             MODEL.last_error = "; ".join(errs)
             ui.notify(MODEL.last_error, type="negative", close_button="Dismiss")
@@ -324,37 +383,57 @@ async def _run_analysis_async(client: Client) -> None:
         for w in warns:
             ui.notify(w, type="warning")
 
-        try:
-            await client.run_javascript(
-                "try{document.activeElement && document.activeElement.blur && document.activeElement.blur();}catch(e){}",
-                timeout=0.35,
-            )
-        except Exception:
-            pass
+        LOADING_OVERLAY.set_phase("Validated inputs — model pipeline ready.", 0.15)
+        logger.info("[OPT] validation ok Δt=%.3fs", _dt())
 
-        try:
-            out = await run.io_bound(_optimization_worker)
-        except Exception as e:
+    await _overlay_pulse(client, "Preparing scenario search…", 0.30)
+    await _overlay_pulse(client, "Generating and scoring scenarios…", 0.45)
+
+    try:
+        await client.run_javascript(
+            "try{document.activeElement && document.activeElement.blur && document.activeElement.blur();}catch(e){}",
+            timeout=0.35,
+        )
+    except Exception:
+        pass
+
+    with client:
+        LOADING_OVERLAY.set_phase("Scoring scenarios with the conversion model…", 0.55)
+    logger.info("[OPT] io_bound dispatch Δt=%.3fs", _dt())
+    _tw0 = time.perf_counter()
+    try:
+        out = await run.io_bound(_optimization_worker)
+    except Exception as e:
+        logger.exception("[OPT] io_bound raised Δt=%.3fs", _dt())
+        with client:
             LOADING_OVERLAY.close()
             MODEL.last_error = f"{type(e).__name__}: {e}"
             ui.notify(MODEL.last_error, type="negative", multi_line=True)
             main_body.refresh()
-            return
+        return
+    logger.info(
+        "[OPT] io_bound done wall=%.3fs Δt=%.3fs",
+        time.perf_counter() - _tw0,
+        _dt(),
+    )
 
+    with client:
         if out is None or not isinstance(out, dict):
+            logger.warning("[OPT] unexpected worker return: %r", out)
             LOADING_OVERLAY.close()
             MODEL.last_error = "Optimization did not return a result (server may be stopping)."
             ui.notify(MODEL.last_error, type="negative")
             main_body.refresh()
             return
-
         if not out.get("ok"):
+            logger.warning("[OPT] worker ok=False: %s", out.get("error"))
             LOADING_OVERLAY.close()
             MODEL.last_error = str(out.get("error") or "Optimization failed.")
             ui.notify(MODEL.last_error, type="negative")
             main_body.refresh()
             return
 
+        LOADING_OVERLAY.set_phase("Selecting recommendation…", 0.80)
         MODEL.result_df = out["df"]
         MODEL.rec_row = out["rec"]
         MODEL.aggressive_row = out["aggressive"]
@@ -363,8 +442,23 @@ async def _run_analysis_async(client: Client) -> None:
         MODEL.relaxed = bool(out["relaxed"])
         MODEL.feasible_n = int(out.get("feasible_n", 0))
         MODEL.state["ui_mode"] = "dashboard"
-        LOADING_OVERLAY.close()
+
+        LOADING_OVERLAY.set_phase("Preparing dashboard (charts and tables)…", 0.92)
+        logger.info("[OPT] main_body.refresh start Δt=%.3fs", _dt())
+        _tr0 = time.perf_counter()
         main_body.refresh()
+        logger.info(
+            "[OPT] main_body.refresh done wall=%.3fs Δt=%.3fs",
+            time.perf_counter() - _tr0,
+            _dt(),
+        )
+        LOADING_OVERLAY.set_phase("Complete.", 1.0)
+
+    await asyncio.sleep(0.05)
+
+    with client:
+        LOADING_OVERLAY.close()
+    logger.info("[OPT] finished Δt=%.3fs", _dt())
 
 
 @ui.refreshable
@@ -417,6 +511,10 @@ def index() -> None:
     ui.add_head_html(f"<style>{theme_css()}</style>")
     try:
         _load_artifacts()
+        logger.info(
+            "[OPT] startup: model pipeline and schema loaded (pipeline is None=%s)",
+            MODEL.pipeline is None,
+        )
     except Exception as e:
         with ui.column().classes("w-full p-8"):
             ui.label(f"Startup failed: {e}").classes("text-lg").style("color:#991b1b;")
@@ -447,11 +545,24 @@ if __name__ in {"__main__", "__mp_main__"}:
     _uvicorn_extra: dict[str, Any] = {}
     if _railway:
         _uvicorn_extra["forwarded_allow_ips"] = "*"
+        # Edge proxies (Railway, etc.) may idle-timeout long-lived connections. Uvicorn WS ping +
+        # longer HTTP keep-alive reduces spurious disconnects; they do not speed up cold starts.
+        _uvicorn_extra["timeout_keep_alive"] = int(
+            os.environ.get("UVICORN_TIMEOUT_KEEP_ALIVE", "120")
+        )
+        _uvicorn_extra["ws_ping_interval"] = float(
+            os.environ.get("UVICORN_WS_PING_INTERVAL", "20")
+        )
+        _uvicorn_extra["ws_ping_timeout"] = float(
+            os.environ.get("UVICORN_WS_PING_TIMEOUT", "90")
+        )
     ui.run(
         host="0.0.0.0",
         port=port,
         title="Auto Finance Subvention Optimizer",
         favicon="🚗",
         reload=not _railway,
+        # Slightly more tolerant than default 3s when the tab is backgrounded or the link is lossy.
+        reconnect_timeout=float(os.environ.get("NICEGUI_RECONNECT_TIMEOUT", "12" if _railway else "3")),
         **_uvicorn_extra,
     )

@@ -138,7 +138,7 @@ def render_wizard(
                     "background:#334155;color:white;"
                 )
             else:
-                ui.button("Run Optimization", on_click=lambda: run_analysis()).props(
+                ui.button("Run Optimization", on_click=run_analysis).props(
                     "unelevated dense no-caps"
                 ).style("background:#166534;color:white;")
 

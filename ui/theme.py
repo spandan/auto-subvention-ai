@@ -472,6 +472,17 @@ body {{
   color: #0f172a !important;
   margin-bottom: 6px !important;
 }}
+.ol-status-line {{
+  font-size: 0.95rem !important;
+  font-weight: 600 !important;
+  color: #0f172a !important;
+  line-height: 1.4 !important;
+  margin-bottom: 8px !important;
+  min-height: 1.35em !important;
+}}
+.ol-progress-bar {{
+  margin-top: 8px !important;
+}}
 .ol-subheading {{
   font-size: 0.9rem !important;
   font-weight: 400 !important;

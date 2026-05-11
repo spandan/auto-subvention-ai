@@ -7,7 +7,7 @@ from typing import Any, Optional
 
 from nicegui import ui
 
-# Rotating reassurance copy (shown on a timer so long runs feel intentional, not stuck).
+# Rotating reassurance copy (secondary line while work runs).
 LOADING_ROTATING_TIPS: tuple[str, ...] = (
     "Mapping your customer, vehicle, and market inputs into the scenario engine.",
     "Enumerating rate-support and cash levers that respect your caps and budget.",
@@ -44,13 +44,23 @@ def _element_has_live_client(el: Any) -> bool:
 class OptimizationLoadingOverlay:
     """Persistent centered card over blurred backdrop."""
 
-    __slots__ = ("_built", "_dialog", "_tip_el", "_tip_index", "_tip_timer")
+    __slots__ = (
+        "_built",
+        "_dialog",
+        "_tip_el",
+        "_tip_index",
+        "_tip_timer",
+        "_progress",
+        "_status_el",
+    )
 
     def __init__(self) -> None:
         self._dialog: Optional[ui.dialog] = None
         self._tip_el: Optional[ui.label] = None
         self._tip_index: int = 0
         self._tip_timer: Any = None
+        self._progress: Optional[ui.linear_progress] = None
+        self._status_el: Optional[ui.label] = None
         self._built = False
 
     def _stop_tip_rotation(self) -> None:
@@ -84,6 +94,8 @@ class OptimizationLoadingOverlay:
         dlg = self._dialog
         self._dialog = None
         self._tip_el = None
+        self._progress = None
+        self._status_el = None
         self._built = False
         if dlg is None:
             return
@@ -98,6 +110,8 @@ class OptimizationLoadingOverlay:
             self._built
             and _element_has_live_client(self._dialog)
             and _element_has_live_client(self._tip_el)
+            and _element_has_live_client(self._progress)
+            and _element_has_live_client(self._status_el)
         )
 
     def build(self) -> None:
@@ -116,12 +130,29 @@ class OptimizationLoadingOverlay:
             ):
                 with ui.card().classes("optimization-loading-card shadow-lg"):
                     ui.label("Running offer optimization").classes("ol-heading")
+                    self._status_el = ui.label("Starting optimization…").classes("ol-status-line")
                     self._tip_index = random.randrange(len(LOADING_ROTATING_TIPS))
                     self._tip_el = ui.label(LOADING_ROTATING_TIPS[self._tip_index]).classes(
                         "ol-rotating-tip"
                     )
+                    self._progress = ui.linear_progress(
+                        value=0.05, show_value=False, color="#059669"
+                    )
+                    self._progress.classes("rounded-full ol-progress-bar")
 
         self._built = True
+
+    def set_phase(self, message: str, progress: float) -> None:
+        """Update milestone text and bar (0..1). Call inside ``with client:`` when in async context."""
+        if self._status_el is None or self._progress is None:
+            return
+        if not _element_has_live_client(self._status_el):
+            return
+        try:
+            self._status_el.text = message
+            self._progress.value = max(0.0, min(1.0, float(progress)))
+        except RuntimeError:
+            self._tear_down()
 
     def open(self) -> None:
         self.build()
@@ -130,6 +161,7 @@ class OptimizationLoadingOverlay:
         try:
             self._dialog.open()
             self._stop_tip_rotation()
+            self.set_phase("Starting optimization…", 0.05)
             self._tip_index = random.randrange(len(LOADING_ROTATING_TIPS))
             if self._tip_el is not None and _element_has_live_client(self._tip_el):
                 self._tip_el.text = LOADING_ROTATING_TIPS[self._tip_index]
@@ -140,6 +172,7 @@ class OptimizationLoadingOverlay:
             if self._dialog is not None:
                 self._dialog.open()
                 self._stop_tip_rotation()
+                self.set_phase("Starting optimization…", 0.05)
                 self._tip_index = random.randrange(len(LOADING_ROTATING_TIPS))
                 if self._tip_el is not None and _element_has_live_client(self._tip_el):
                     self._tip_el.text = LOADING_ROTATING_TIPS[self._tip_index]
@@ -157,4 +190,3 @@ class OptimizationLoadingOverlay:
             pass
         finally:
             self._tear_down()
-
