@@ -214,6 +214,11 @@ def _load_artifacts() -> None:
     MODEL.sample_defaults = get_sample_defaults()
 
 
+def _run_input_validation() -> tuple[list[str], list[str]]:
+    business = build_business_inputs(MODEL.state)
+    return validate_business_inputs(business, MODEL.state)
+
+
 def _optimization_worker() -> dict[str, Any]:
     """
     Heavy work for thread pool (keeps UI event loop responsive).
@@ -282,44 +287,53 @@ def _optimization_worker() -> dict[str, Any]:
 def run_analysis() -> None:
     """Schedule optimization — must run from a NiceGUI click handler so `client` exists."""
     client = ui.context.client
+    MODEL.last_error = None
+    errs, warns = _run_input_validation()
+    if errs:
+        MODEL.last_error = "; ".join(errs)
+        ui.notify(MODEL.last_error, type="negative", close_button="Dismiss")
+        main_body.refresh()
+        return
+    for w in warns:
+        ui.notify(w, type="warning")
+
+    # Avoid stacked Quasar modals: edit drawer backdrop can block the loading overlay and
+    # trigger aria-hidden/focus warnings until another click clears focus.
+    try:
+        if EDIT_DRAWER.dialog is not None and not EDIT_DRAWER.dialog.is_deleted:
+            EDIT_DRAWER.dialog.close()
+    except Exception:
+        pass
+    _tear_down_edit_drawer()
+
+    # Open loading in the click handler so the browser gets the dialog update immediately.
+    # Previously the overlay opened only inside a background task after await run_javascript
+    # (up to 2s round-trip), which felt like "nothing happens until I click again".
+    LOADING_OVERLAY.build()
+    LOADING_OVERLAY.open()
     create_background_task(_run_analysis_async(client), name="run_analysis")
 
 
 async def _run_analysis_async(client: Client) -> None:
     """All `ui.*` / refreshable updates run under `client` (background tasks have empty slot stack)."""
     with client:
-        MODEL.last_error = None
-        business = build_business_inputs(MODEL.state)
-        errs, warns = validate_business_inputs(business, MODEL.state)
+        errs, _warns = _run_input_validation()
         if errs:
+            LOADING_OVERLAY.close()
             MODEL.last_error = "; ".join(errs)
             ui.notify(MODEL.last_error, type="negative", close_button="Dismiss")
             main_body.refresh()
             return
-        for w in warns:
-            ui.notify(w, type="warning")
-
-        # Avoid stacked Quasar modals: edit drawer backdrop can block the loading overlay and
-        # trigger aria-hidden/focus warnings until another click clears focus.
-        try:
-            if EDIT_DRAWER.dialog is not None and not EDIT_DRAWER.dialog.is_deleted:
-                EDIT_DRAWER.dialog.close()
-        except Exception:
-            pass
-        _tear_down_edit_drawer()
 
         await asyncio.sleep(0)
         try:
             await client.run_javascript(
                 "try{document.activeElement && document.activeElement.blur && document.activeElement.blur();}catch(e){}",
-                timeout=2.0,
+                timeout=0.35,
             )
         except Exception:
             pass
-        await asyncio.sleep(0.05)
 
-        LOADING_OVERLAY.build()
-        LOADING_OVERLAY.open()
         try:
             out = await run.io_bound(_optimization_worker)
         except Exception as e:

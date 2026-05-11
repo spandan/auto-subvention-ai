@@ -620,35 +620,6 @@ def render_kpi_row(
                 ui.label(hint).classes("kpi-exec-hint")
 
 
-def render_recommended_package_card(rec: pd.Series) -> None:
-    with ui.element("div").classes("dash-panel w-full"):
-        ui.label("Recommended incentive package").classes("dash-section-h2").style(
-            "margin-bottom:12px;"
-        )
-
-        defs = (
-            ("Rate Support Level", f"{int(rec['dealer_rate_support_level'])} support points"),
-            ("Dealer APR", f"{float(rec['scenario_dealer_apr']):.2f}%"),
-            ("Monthly Payment", _fmt_money(float(rec["scenario_dealer_monthly_payment"]))),
-            ("Loan Term", f"{int(rec['loan_term'])} months"),
-            ("OEM / Customer Cash", _fmt_money(float(rec["customer_cash"]))),
-            ("Dealer Contribution", _fmt_money(float(rec["dealer_cash"]))),
-            ("Loyalty Incentive", _fmt_money(float(rec["loyalty_cash"]))),
-            ("Conquest Incentive", _fmt_money(float(rec["conquest_cash"]))),
-            ("Estimated Support Cost", _fmt_money(float(rec["estimated_support_cost"]))),
-            ("Remaining Margin", _fmt_money(float(rec["remaining_margin_estimate"]))),
-        )
-        for k, v in defs:
-            with ui.element("div").classes("def-row"):
-                ui.label(k).style("font-size:13px;color:#64748b;font-weight:500;")
-                ui.label(str(v)).style("font-size:13px;color:#111827;font-weight:700;text-align:right;")
-
-        ui.label(
-            "Recommended package improves conversion while preserving margin. Higher-spend packages "
-            "produced additional conversion, but with weaker incremental efficiency."
-        ).classes("ds-helper mt-4").style("color:#475569;line-height:1.5;font-size:13px;")
-
-
 def _tri_cell(txt: str, *, highlight: bool = False, header: bool = False) -> None:
     st = (
         "font-size:13px;font-weight:800;text-transform:uppercase;letter-spacing:0.06em;color:#94a3b8;"
@@ -679,19 +650,42 @@ def render_offer_comparison(
             return "—"
         return _fmt_money(float(s[k]))
 
-    def val_float(s: pd.Series | None, k: str, nd: int = 3) -> str:
+    def val_apr_pct(s: pd.Series | None) -> str:
         if s is None:
             return "—"
-        return f"{float(s[k]):.{nd}f}"
+        return f"{float(s['scenario_dealer_apr']):.2f}%"
+
+    def val_rate_support(s: pd.Series | None) -> str:
+        if s is None:
+            return "—"
+        return f"{int(s['dealer_rate_support_level'])} support points"
+
+    def val_term_months(s: pd.Series | None) -> str:
+        if s is None:
+            return "—"
+        return f"{int(s['loan_term'])} months"
+
+    def val_support_cost(s: pd.Series | None) -> str:
+        if s is None and cur_support is None:
+            return "—"
+        if s is None:
+            return _fmt_money(float(cur_support))
+        return _fmt_money(float(s["estimated_support_cost"]))
 
     econ = lambda s: f"{float(s['expected_value']):,.0f}" if s is not None else "—"
 
     rows = (
         ("Conversion probability", val_conv(cur_row, "conversion_probability"), val_conv(rec, "conversion_probability"), val_conv(agg, "conversion_probability")),
-        ("Estimated support cost", ("—" if cur_support is None else _fmt_money(cur_support)), _fmt_money(float(rec["estimated_support_cost"])), _fmt_money(float(agg["estimated_support_cost"]))),
-        ("Dealer APR", val_float(cur_row, "scenario_dealer_apr"), val_float(rec, "scenario_dealer_apr"), val_float(agg, "scenario_dealer_apr")),
+        ("Rate support level", val_rate_support(cur_row), val_rate_support(rec), val_rate_support(agg)),
+        ("Dealer APR", val_apr_pct(cur_row), val_apr_pct(rec), val_apr_pct(agg)),
         ("Monthly payment", val_money(cur_row, "scenario_dealer_monthly_payment"), val_money(rec, "scenario_dealer_monthly_payment"), val_money(agg, "scenario_dealer_monthly_payment")),
+        ("Loan term", val_term_months(cur_row), val_term_months(rec), val_term_months(agg)),
+        ("OEM / Customer cash", val_money(cur_row, "customer_cash"), val_money(rec, "customer_cash"), val_money(agg, "customer_cash")),
+        ("Dealer contribution", val_money(cur_row, "dealer_cash"), val_money(rec, "dealer_cash"), val_money(agg, "dealer_cash")),
+        ("Loyalty incentive", val_money(cur_row, "loyalty_cash"), val_money(rec, "loyalty_cash"), val_money(agg, "loyalty_cash")),
+        ("Conquest incentive", val_money(cur_row, "conquest_cash"), val_money(rec, "conquest_cash"), val_money(agg, "conquest_cash")),
         ("Cash rebate (total)", val_money(cur_row, "total_cash_rebate"), val_money(rec, "total_cash_rebate"), val_money(agg, "total_cash_rebate")),
+        ("Estimated support cost", val_support_cost(cur_row), val_support_cost(rec), val_support_cost(agg)),
         ("Remaining margin", val_money(cur_row, "remaining_margin_estimate"), val_money(rec, "remaining_margin_estimate"), val_money(agg, "remaining_margin_estimate")),
         ("Expected economic score", econ(cur_row), econ(rec), econ(agg)),
     )
@@ -720,6 +714,12 @@ def render_offer_comparison(
                 _tri_cell(a)
                 _tri_cell(b, highlight=True)
                 _tri_cell(c)
+
+        ui.label(
+            "Recommended improves conversion while preserving margin under your constraints. "
+            "Aggressive is the highest predicted conversion in the evaluated grid—often more spend "
+            "with weaker incremental efficiency than the recommendation."
+        ).classes("ds-helper mt-4").style("color:#475569;line-height:1.5;font-size:13px;")
 
 
 def render_top_scenarios_table(
@@ -981,16 +981,8 @@ def render_dashboard(
     cur_row: pd.Series | None = None
     if rm_b is not None and not err_b:
         ev_cur = float(baseline_p) * margin_u - cur_support
-        cur_row = pd.Series(
-            {
-                "conversion_probability": float(baseline_p),
-                "scenario_dealer_apr": float(rm_b["dealer_apr"]),
-                "scenario_dealer_monthly_payment": float(rm_b["dealer_monthly_payment"]),
-                "total_cash_rebate": float(rm_b.get("total_cash_rebate", 0.0)),
-                "remaining_margin_estimate": margin_u - cur_support,
-                "expected_value": ev_cur,
-            }
-        )
+        cur_row = baseline_hover_row.copy()
+        cur_row["expected_value"] = float(ev_cur)
 
     scenarios_evaluated = int(meta.get("scenarios_evaluated") or len(result_df))
     total_grid = int(meta.get("total_grid_scenarios") or 0)
@@ -1020,7 +1012,6 @@ def render_dashboard(
                 apr_pct=float(rec["scenario_dealer_apr"]),
                 monthly_pay=float(rec["scenario_dealer_monthly_payment"]),
             )
-            render_recommended_package_card(rec)
             render_offer_comparison(cur_row, rec, aggressive, cur_support=cur_support)
             ladder = mk_incentive_ladder_fig(
                 result_df,
