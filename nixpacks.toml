@@ -1,4 +1,8 @@
-# OpenMP runtime for LightGBM wheels on slim Linux images (Railway / Nixpacks).
+# OpenMP runtime for LightGBM wheels (Railpack / legacy Nixpacks when not using Dockerfile).
 # "..." keeps provider defaults and appends libgomp1.
 [phases.setup]
 aptPkgs = ["...", "libgomp1"]
+
+# Used only if you switch the Railway builder away from Dockerfile to Railpack/Nixpacks.
+[start]
+cmd = "python app.py"

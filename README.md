@@ -3,30 +3,24 @@ title: Auto Finance Offer Conversion Simulator
 emoji: 🚗
 colorFrom: blue
 colorTo: indigo
-sdk: streamlit
-sdk_version: "1.41.0"
-app_file: app.py
+sdk: docker
 pinned: false
 ---
 
 # Auto Finance Offer Conversion Simulator
 
-Streamlit app that loads a trained **scikit-learn** pipeline (`model_pipeline.pkl`) and estimates **customer conversion probability** from **business-friendly** sidebar inputs (engineered ML features are computed in code). A **Subvention Simulator** sweeps subvention levels with APR/payment adjustments.
+NiceGUI app that loads a trained **scikit-learn** pipeline (`model_pipeline.pkl`) and estimates **customer conversion probability** from guided inputs. A **subvention scenario search** explores dealer rate support and cash levers under constraints, then surfaces a recommended efficient offer, charts, and scenario tables.
 
-**Phase 2** adds **profit & economics**: configurable gross margin, F&I reserve, inventory holding cost, optional cashback-as-cost, a calibrated **subvention program cost** estimate, **expected profit** (`P(convert) × net contribution if closed`), and a second optimization hint (**best expected profit** vs **best conversion**).
-
-The app **does not train or retrain** models; conversion scores come only from `predict_proba()` on your saved pipeline. Phase 2 dollar math is **illustrative**—tune sidebar sliders to match your desk / OEM program.
+The app **does not train or retrain** models; scores come from `predict_proba()` on your saved pipeline. Dollar economics (support cost, margin, expected value) are **illustrative**—tune inputs to match your desk / OEM program.
 
 ## Expected artifacts (project root)
-
-Place these files next to `app.py`:
 
 | File | Purpose |
 |------|---------|
 | `model_pipeline.pkl` | Trained pipeline loaded with `joblib.load()`; must implement `predict_proba`. |
-| `feature_schema.json` | JSON object with a `required_columns` array (ordered feature names for the model input row). Optional: `categorical_values` for selectbox options (see below). |
+| `feature_schema.json` | JSON object with a `required_columns` array (ordered feature names for the model input row). Optional: `categorical_values` for select options (see below). |
 | `sample_input.json` | Single JSON object: defaults for widgets and **fallback values** for any required columns not produced by the UI. |
-| `model_metadata.json` | Optional; shown in the **Model Info** tab. |
+| `model_metadata.json` | Optional; shown in the **Model details** section on the results dashboard. |
 
 ### `feature_schema.json` shape
 
@@ -38,7 +32,7 @@ Minimal:
 }
 ```
 
-Optional `categorical_values` for sidebar selectboxes (otherwise categories are inferred from `sample_input.json`):
+Optional `categorical_values` (otherwise categories are inferred from `sample_input.json`):
 
 ```json
 {
@@ -50,32 +44,47 @@ Optional `categorical_values` for sidebar selectboxes (otherwise categories are 
 }
 ```
 
-The app **always recomputes** these derived columns from the sidebar row (and again in the subvention simulator after APR changes). Include them in `required_columns` whenever your pipeline was trained with them:
-
-- `apr_gap_bps` = `(our_apr - competitor_apr) * 100`
-- `payment_gap` = `our_monthly_payment - competitor_monthly_payment`
-- `cashback_gap` = `our_cashback - competitor_cashback`
-- `sensitivity_x_apr_gap` = `price_sensitivity_score * apr_gap_bps`
-- `loyalty_x_payment_gap` = `brand_loyalty_score * payment_gap`
-- `urgency_x_pricing_disadvantage` = `customer_urgency_score * max(apr_gap_bps, 0)`
+The pipeline row is built from **`build_business_inputs`** + feature engineering in `services/feature_engineering.py` and aligned to `required_columns` before prediction.
 
 ## Run locally
 
 ```bash
 pip install -r requirements.txt
-streamlit run app.py
+python app.py
 ```
 
-Open the URL shown in the terminal (typically `http://localhost:8501`).
+Open `http://localhost:8080` (or the host/port shown in the terminal). The process listens on **`0.0.0.0`** and uses the **`PORT`** environment variable when set (e.g. on Railway or Hugging Face).
+
+## Deploy (Docker / PaaS)
+
+The included **`Dockerfile`** runs `python app.py`. Set **`PORT`** if your platform requires a specific listen port.
+
+## Deploy on Railway
+
+1. **New project → Deploy from GitHub** (or connect this repo another way).
+2. Railway picks **`railway.toml`**: **`DOCKERFILE`** build and **`deploy`** settings (single replica, `/` health check, generous timeout for pickle load + NiceGUI startup).
+3. **`PORT`** is set automatically — **`app.py`** already binds **`0.0.0.0`** to that port.
+4. **Artifacts**: **`model_pipeline.pkl`** and **`feature_schema.json`** are required (startup **`assert_artifacts_present()`**). Add **`sample_input.json`** and **`model_metadata.json`** beside **`app.py`** when you use them — often via committing them or syncing from a Railway **volume**/CI step before start.
+5. Leave **one replica** (`numReplicas = 1` in **`railway.toml`**): the app keeps state in-memory and uses WebSockets; scaling out needs sticky sessions / re-architecture.
+6. **Resources**: allocate enough **RAM** for LightGBM + pandas (e.g. **≥ 1 GB**) so the bundle can load cleanly.
+
+Generate a **public domain** under the Railway service (**Settings → Networking → Generate Domain**) — no reverse-proxy flags are required for NiceGUI behind Railway’s HTTPS.
 
 ## Deploy on Hugging Face Spaces
 
-1. Create a **new Space** at [huggingface.co/new-space](https://huggingface.co/new-space), choose **Streamlit** as the SDK.
-2. Push this repository (or upload files) so the Space root contains `app.py`, `requirements.txt`, and `README.md` with the YAML frontmatter above (Hugging Face uses it for title, SDK, and `app_file`).
-3. Upload your artifacts (`model_pipeline.pkl`, `feature_schema.json`, `sample_input.json`, `model_metadata.json`) to the Space repository root **or** use Space **Secrets / files** if you prefer not to commit large binaries—either way, the files must be present beside `app.py` at runtime.
-4. Wait for the build to finish; open the Space URL.
+1. Create a **Docker** Space and push this repository (or use the Space UI to add files).
+2. Ensure artifacts (`model_pipeline.pkl`, `feature_schema.json`, `sample_input.json`, etc.) exist in the repo or are provided at runtime.
+3. Builds install from **`requirements.txt`**. `lightgbm` supports many pickled sklearn pipelines that include a LightGBM step.
 
-**Note:** The Space build installs dependencies from `requirements.txt`. `lightgbm` is listed because many pipelines persist a LightGBM step inside the pickled sklearn pipeline.
+## Project layout
+
+| Path | Role |
+|------|------|
+| `app.py` | NiceGUI entry: session state, `run_analysis`, edit drawer, `main_body` refresh. |
+| `ui/` | Theme, wizard, dashboard, charts, loading overlay. |
+| `services/` | Feature engineering, model I/O, optimization / scenario sweep. |
+
+See **`docs/architecture.md`** for data flow and scenario logic.
 
 ## Troubleshooting
 
@@ -86,29 +95,5 @@ Pickled **pipelines that include `ColumnTransformer`** are tied to the **scikit-
 **Fix:** Run the app with **the same sklearn major.minor as training**, or at least **`scikit-learn<1.7`** if the model was produced on 1.6.x.
 
 - **Conda (recommended):** `conda install "scikit-learn>=1.6,<1.7"` (or pin the exact version from your training env).
-- **venv + pip:** use `requirements.txt` in this repo (sklearn is pinned to `>=1.6,<1.7`).
+- **venv + pip:** match **`requirements.txt`** (sklearn is pinned for pickle safety).
 - **Long-term:** re-export the pipeline after fitting with your target sklearn version, or record `sklearn.__version__` in `model_metadata.json` and match it in production.
-
-## App behavior (summary)
-
-### Phase 1 (conversion ML)
-
-- **Single Scenario:** business inputs → engineered features → DataFrame aligned to `feature_schema.required_columns` → conversion probability, likelihood band, competitive position, optional **Model Feature Preview**.
-- **Subvention Simulator:** sweeps candidate subvention (bps), adjusts our APR and monthly payment per app rules, recomputes features, plots **P(convert)** vs subvention, table of scenarios, highlights **best conversion probability**.
-- **Model Info:** raw JSON for `model_metadata.json` and `feature_schema.json`.
-
-### Phase 2 (profit & economics)
-
-Sidebar section **Profit & economics (Phase 2)** (does not feed the ML model):
-
-| Control | Role |
-|--------|------|
-| Vehicle front-end gross ($) | Contribution if the deal closes |
-| F&I / backend contribution ($) | Additional reserve per closed deal |
-| Inventory holding cost ($ / day) | × days in inventory |
-| Treat cashback as funded cost | Subtract **Our Cashback** from net when checked |
-| Subvention cost calibration (×) | Scales the proxy subvention cost formula |
-
-**Single Scenario:** metrics for estimated subvention cost, holding cost, net if closed, and **expected profit**.
-
-**Subvention Simulator:** extra columns (`subvention_cost_usd`, `holding_cost_usd`, `net_if_closed_usd`, `expected_profit_usd`), second chart **expected profit vs subvention**, and callout for **best expected profit** (may differ from best conversion).
