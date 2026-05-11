@@ -289,6 +289,12 @@ def run_analysis() -> None:
     client = ui.context.client
     MODEL.last_error = None
 
+    # Show loading first, synchronously in this handler, so the next WS flush can include it
+    # as soon as this function returns. The optimizer cannot run synchronously here: it would
+    # block the asyncio event loop (no outbound messages, frozen UI, client timeouts). Work
+    # stays in a thread via `run.io_bound`; only UI updates use `with client:` in the async task.
+    LOADING_OVERLAY.open()
+
     # Avoid stacked Quasar modals: edit drawer backdrop can block the loading overlay and
     # trigger aria-hidden/focus warnings until another click clears focus.
     try:
@@ -298,12 +304,6 @@ def run_analysis() -> None:
         pass
     _tear_down_edit_drawer()
 
-    # Open loading before validation/work: gathering inputs via `build_business_inputs` is
-    # cheap (O(1) dict assembly), not seconds of work. Perceived lag is usually the event loop
-    # not flushing WS updates until the click handler returns and/or the background task yields
-    # — not a race on MODEL.state. Invalid runs close the overlay on the next tick.
-    LOADING_OVERLAY.build()
-    LOADING_OVERLAY.open()
     create_background_task(_run_analysis_async(client), name="run_analysis")
 
 
