@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from nicegui import ui
+from nicegui.background_tasks import create as create_background_task
 
 from services.feature_engineering import (
     build_business_inputs,
@@ -464,9 +465,11 @@ def render_left_summary_panel(
         with ui.element("div").classes("rail-run-stack"):
             ui.button(
                 "Re-run Optimization",
-                on_click=lambda: asyncio.create_task(run_analysis())
-                if asyncio.iscoroutinefunction(run_analysis)
-                else run_analysis(),
+                on_click=lambda: (
+                    create_background_task(run_analysis(), name="run_analysis")
+                    if asyncio.iscoroutinefunction(run_analysis)
+                    else run_analysis()
+                ),
             ).props(
                 "unelevated dense no-caps"
             ).classes("btn-dash btn-dash-primary")

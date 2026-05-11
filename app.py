@@ -337,4 +337,16 @@ def index() -> None:
 
 if __name__ in {"__main__", "__mp_main__"}:
     port = int(os.environ.get("PORT", 8080))
-    ui.run(host="0.0.0.0", port=port, title="Auto Finance Subvention Optimizer", favicon="🚗")
+    # Railway / Docker: disable dev reloader; trust proxy so WS + HTTPS URLs resolve correctly.
+    _railway = os.environ.get("RAILWAY_ENVIRONMENT") is not None
+    _uvicorn_extra: dict[str, Any] = {}
+    if _railway:
+        _uvicorn_extra["forwarded_allow_ips"] = "*"
+    ui.run(
+        host="0.0.0.0",
+        port=port,
+        title="Auto Finance Subvention Optimizer",
+        favicon="🚗",
+        reload=not _railway,
+        **_uvicorn_extra,
+    )

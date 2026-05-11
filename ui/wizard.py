@@ -6,6 +6,7 @@ import asyncio
 from typing import Any, Callable
 
 from nicegui import ui
+from nicegui.background_tasks import create as create_background_task
 
 from services.constants import (
     BODY_STYLES_UI,
@@ -140,8 +141,10 @@ def render_wizard(
                 )
             else:
                 def _run_opt() -> None:
+                    # NiceGUI: use background_tasks.create so the task is not GC'd mid-flight
+                    # (bare asyncio.create_task can appear to "do nothing" after click).
                     if asyncio.iscoroutinefunction(run_analysis):
-                        asyncio.create_task(run_analysis())  # type: ignore[misc]
+                        create_background_task(run_analysis(), name="run_analysis")  # type: ignore[misc]
                     else:
                         run_analysis()  # type: ignore[misc]
 
