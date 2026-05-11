@@ -714,6 +714,41 @@ def EXEC_FONT_LINKS() -> str:
 def EXEC_THEME_CSS() -> str:
     return """
 <style>
+    /* ========== Spacing scale: 4 / 8 / 12 / 16 / 24 / 32 (48+ only for major dashboard bands) ========== */
+    :root {
+        --space-xxs: 4px;
+        --space-xs: 8px;
+        --space-sm: 12px;
+        --space-md: 16px;
+        --space-lg: 24px;
+        --space-xl: 32px;
+        --space-2xl: 48px;
+        --exec-radius-card: 12px;
+        --exec-radius-control: 8px;
+        --exec-page-gutter-x: var(--space-lg);
+        --exec-page-gutter-y: var(--space-md);
+        --exec-card-pad: var(--space-md);
+        --exec-card-pad-y: var(--space-md);
+        --exec-card-pad-x: var(--space-md);
+        --exec-chart-pad: var(--space-lg);
+        --exec-field-group-mb: 18px;
+        --exec-gap-label-input: var(--space-xs);
+        --exec-gap-input-helper: var(--space-sm);
+        --exec-gap-helper-next: var(--space-md);
+        --exec-slider-mt: var(--space-sm);
+        --exec-slider-mb: var(--space-md);
+        --exec-label-pb: var(--space-xxs);
+        --exec-text-mt: var(--space-xxs);
+        --exec-text-mb: var(--space-xs);
+        --exec-kpi-pad: var(--space-md);
+        --exec-kpi-val-lbl: 10px;
+        --exec-kpi-lbl-sub: var(--space-xs);
+        --exec-dropdown-pad-y: var(--space-sm);
+        --exec-btn-row-mt: var(--space-lg);
+        --exec-table-cell-py: var(--space-sm);
+        --exec-table-cell-px: var(--space-md);
+    }
+
     /* --- Typography: Inter + sensible system stack (free, open font) --- */
     html, body, .stApp {
         font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
@@ -742,11 +777,58 @@ def EXEC_THEME_CSS() -> str:
     [data-testid="stMain"] .block-container,
     section.main > div.block-container,
     .main .block-container {
-        padding-top: 0.75rem !important;
-        padding-left: 2rem !important;
-        padding-right: 2rem !important;
-        padding-bottom: 2rem !important;
-        max-width: 100% !important;
+        padding-top: var(--exec-page-gutter-y) !important;
+        padding-left: var(--exec-page-gutter-x) !important;
+        padding-right: var(--exec-page-gutter-x) !important;
+        padding-bottom: var(--exec-page-gutter-y) !important;
+        max-width: 1180px !important;
+        margin-left: auto !important;
+        margin-right: auto !important;
+        box-sizing: border-box !important;
+    }
+    /* Body copy — tight inset; line-height prevents overlap */
+    [data-testid="stAppViewContainer"] [data-testid="stMarkdownContainer"] {
+        padding: var(--space-xxs) var(--space-sm) !important;
+        box-sizing: border-box !important;
+    }
+    [data-testid="stAppViewContainer"] [data-testid="stMarkdownContainer"] p,
+    [data-testid="stAppViewContainer"] [data-testid="stMarkdownContainer"] li {
+        line-height: 1.5 !important;
+    }
+    [data-testid="stAppViewContainer"] [data-testid="stCaptionContainer"] {
+        padding: var(--space-xxs) var(--space-xs) !important;
+        margin-top: var(--space-xxs) !important;
+        margin-bottom: var(--space-xs) !important;
+        box-sizing: border-box !important;
+    }
+    [data-testid="stAppViewContainer"] [data-testid="stDataFrame"] {
+        padding: var(--space-sm) !important;
+        box-sizing: border-box !important;
+    }
+    [data-testid="stAppViewContainer"] [data-testid="stDataFrame"] th,
+    [data-testid="stAppViewContainer"] [data-testid="stDataFrame"] td {
+        padding: var(--exec-table-cell-py) var(--exec-table-cell-px) !important;
+        box-sizing: border-box !important;
+    }
+    /* Vertical stacks — balanced density */
+    section.main [data-testid="stVerticalBlock"] {
+        gap: var(--space-sm) !important;
+    }
+    /* Tabs — breathing room above panel content */
+    section.main [data-testid="stTabs"] {
+        margin-bottom: var(--space-md) !important;
+    }
+    section.main [data-testid="stTabs"] [data-baseweb="tab-list"] {
+        margin-bottom: 0 !important;
+    }
+    /* Field / widget cards — fixed padding, content-driven height */
+    [data-testid="stVerticalBlockBorderWrapper"] {
+        padding: var(--exec-card-pad) !important;
+        margin-bottom: var(--exec-field-group-mb) !important;
+        border-radius: var(--exec-radius-card) !important;
+        box-sizing: border-box !important;
+        min-height: 0 !important;
+        height: auto !important;
     }
     /* Sidebar: same issue — excess padding above first heading */
     [data-testid="stSidebar"] > div:first-child {
@@ -756,10 +838,11 @@ def EXEC_THEME_CSS() -> str:
         padding-top: 0.25rem !important;
     }
     [data-testid="stSidebar"] .block-container {
-        padding-top: 0.5rem !important;
-        padding-bottom: 1.5rem !important;
-        padding-left: 1rem !important;
-        padding-right: 1rem !important;
+        padding-top: var(--space-md) !important;
+        padding-bottom: var(--exec-page-gutter-y) !important;
+        padding-left: var(--space-lg) !important;
+        padding-right: var(--space-lg) !important;
+        box-sizing: border-box !important;
     }
 
     /* --- Base app surface --- */
@@ -781,25 +864,117 @@ def EXEC_THEME_CSS() -> str:
         min-width: 0 !important;
     }
     [data-testid="stSidebar"] [data-testid="stVerticalBlockBorderWrapper"] {
-        margin-top: 0.35rem !important;
-        margin-bottom: 1.35rem !important;
+        margin-top: var(--space-xs) !important;
+        margin-bottom: var(--exec-field-group-mb) !important;
     }
     [data-testid="stSidebar"] div[data-testid="element-container"]:has([data-baseweb="select"]) {
-        margin-bottom: 0.85rem !important;
+        margin-bottom: var(--exec-field-group-mb) !important;
         width: 100% !important;
         max-width: 100% !important;
     }
     [data-testid="stSidebar"] .stSlider {
-        margin-bottom: 0.15rem !important;
+        margin-top: var(--exec-slider-mt) !important;
+        margin-bottom: var(--exec-slider-mb) !important;
     }
     [data-testid="stSidebar"] [data-testid="stTextInput"] {
-        margin-bottom: 0.35rem !important;
+        margin-bottom: var(--space-sm) !important;
     }
 
-    /* Altair embeds: extra inset so axis titles / % ticks aren’t clipped at container edges */
+    /* Altair — generous canvas inset inside chart cards */
     [data-testid="stVegaLiteChart"] {
-        padding: 0.45rem 0.6rem 0.8rem 0.55rem !important;
+        padding: var(--exec-chart-pad) var(--exec-chart-pad) var(--space-md) var(--exec-chart-pad) !important;
         box-sizing: border-box !important;
+    }
+
+    /* Select / multiselect — vertical breathing room */
+    [data-testid="stSelectbox"],
+    [data-testid="stMultiSelect"] {
+        margin-top: var(--space-xs) !important;
+        margin-bottom: var(--exec-gap-helper-next) !important;
+    }
+    [data-testid="stSelectbox"] [data-baseweb="select"] > div:first-child,
+    [data-testid="stMultiSelect"] [data-baseweb="select"] > div:first-child {
+        padding-top: var(--exec-dropdown-pad-y) !important;
+        padding-bottom: var(--exec-dropdown-pad-y) !important;
+        border-radius: var(--exec-radius-control) !important;
+    }
+
+    /* Expanders — separation from neighbors + inner air */
+    [data-testid="stExpander"] {
+        margin-top: var(--exec-gap-input-helper) !important;
+        margin-bottom: var(--exec-gap-helper-next) !important;
+    }
+    [data-testid="stExpander"] details {
+        padding-top: var(--exec-dropdown-pad-y) !important;
+        padding-bottom: var(--exec-dropdown-pad-y) !important;
+        border-radius: var(--exec-radius-card) !important;
+    }
+
+    /* 1–10 scale: one-line hint + compact “Scale guide” panel (inside expander) */
+    .exec-scale-hint {
+        font-size: 0.75rem !important;
+        color: #64748b !important;
+        margin: 2px 0 6px 0 !important;
+        line-height: 1.35 !important;
+    }
+    .exec-scale-guide {
+        background: #f4f4f5 !important;
+        border: 1px solid #e4e4e7 !important;
+        border-radius: 10px !important;
+        padding: 10px 12px !important;
+        margin: 0 !important;
+        max-height: 132px !important;
+        overflow-y: auto !important;
+        box-sizing: border-box !important;
+        box-shadow: none !important;
+    }
+    .exec-scale-guide__grid {
+        display: grid !important;
+        grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+        gap: 8px 10px !important;
+        align-items: start !important;
+    }
+    .exec-scale-guide__col {
+        min-width: 0 !important;
+    }
+    .exec-scale-guide__num {
+        display: block !important;
+        font-size: 1.15rem !important;
+        font-weight: 700 !important;
+        letter-spacing: -0.02em !important;
+        color: #18181b !important;
+        line-height: 1.05 !important;
+    }
+    .exec-scale-guide__tier {
+        display: block !important;
+        font-size: 0.65rem !important;
+        font-weight: 700 !important;
+        text-transform: uppercase !important;
+        letter-spacing: 0.06em !important;
+        color: #71717a !important;
+        margin-top: 4px !important;
+    }
+    .exec-scale-guide__txt {
+        margin: 4px 0 0 0 !important;
+        padding: 0 !important;
+        font-size: 0.72rem !important;
+        line-height: 1.35 !important;
+        color: #64748b !important;
+    }
+    @media (max-width: 720px) {
+        .exec-scale-guide__grid {
+            grid-template-columns: 1fr !important;
+        }
+        .exec-scale-guide {
+            max-height: 220px !important;
+        }
+    }
+
+    /* Sliders — never collide with labels or following copy */
+    section.main .stSlider,
+    [data-testid="stSidebar"] .stSlider {
+        margin-top: var(--exec-slider-mt) !important;
+        margin-bottom: var(--exec-slider-mb) !important;
     }
 
     /* Results view: scroll-to-top target sits above the page title */
@@ -816,6 +991,17 @@ def EXEC_THEME_CSS() -> str:
         opacity: 1 !important;
         font-weight: 500 !important;
         font-size: 0.9375rem !important;
+    }
+    /* Labels inside bordered groups — align + separate from control */
+    [data-testid="stWidgetLabel"],
+    label[data-testid="stWidgetLabel"] {
+        padding-bottom: var(--exec-label-pb) !important;
+        margin-bottom: var(--exec-gap-label-input) !important;
+    }
+    [data-testid="stVerticalBlockBorderWrapper"] [data-testid="stWidgetLabel"] {
+        padding: var(--space-xs) var(--space-sm) var(--exec-label-pb) var(--space-sm) !important;
+        margin-bottom: var(--exec-gap-label-input) !important;
+        box-sizing: border-box !important;
     }
     /* ? chip + hover popup (DOM text; avoids stripped title= in st.markdown HTML) */
     .exec-field-help-wrap {
@@ -904,7 +1090,7 @@ def EXEC_THEME_CSS() -> str:
 
     /* --- Tabs: inactive must stay legible --- */
     .stTabs [data-baseweb="tab-list"] {
-        gap: 8px;
+        gap: var(--space-xs);
         background: transparent !important;
         border-bottom: 1px solid #d4d4d8 !important;
     }
@@ -912,8 +1098,8 @@ def EXEC_THEME_CSS() -> str:
         color: #3f3f46 !important;
         opacity: 1 !important;
         font-weight: 500 !important;
-        border-radius: 8px 8px 0 0 !important;
-        padding: 0.5rem 1rem !important;
+        border-radius: var(--exec-radius-control) var(--exec-radius-control) 0 0 !important;
+        padding: var(--space-xs) var(--space-md) !important;
     }
     .stTabs [aria-selected="false"] {
         color: #3f3f46 !important;
@@ -932,9 +1118,11 @@ def EXEC_THEME_CSS() -> str:
     [data-testid="stMetricContainer"] {
         background: #ffffff !important;
         border: 1px solid #e4e4e7 !important;
-        border-radius: 10px !important;
-        padding: 0.85rem 1rem !important;
+        border-radius: var(--exec-radius-card) !important;
+        padding: var(--exec-card-pad-y) var(--exec-card-pad-x) !important;
+        margin-bottom: var(--exec-gap-helper-next) !important;
         box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05) !important;
+        box-sizing: border-box !important;
     }
     [data-testid="stMetricLabel"] {
         opacity: 1 !important;
@@ -964,10 +1152,11 @@ def EXEC_THEME_CSS() -> str:
     .exec-hero-card {
         background: #ffffff;
         border: 1px solid #e4e4e7;
-        border-radius: 12px;
-        padding: 1.75rem 2rem;
-        margin-bottom: 1rem;
+        border-radius: var(--exec-radius-card);
+        padding: var(--space-lg) var(--space-md);
+        margin-bottom: var(--space-lg);
         box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
+        box-sizing: border-box;
     }
     .exec-hero-card .exec-label {
         color: #52525b;
@@ -989,8 +1178,8 @@ def EXEC_THEME_CSS() -> str:
     .exec-hero-metrics-grid {
         display: grid;
         grid-template-columns: repeat(4, minmax(0, 1fr));
-        gap: 0.75rem;
-        margin: 0.75rem 0 1.25rem 0;
+        gap: var(--space-md);
+        margin: var(--space-sm) 0 var(--space-lg) 0;
     }
     @media (max-width: 1100px) {
         .exec-hero-metrics-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -1001,9 +1190,10 @@ def EXEC_THEME_CSS() -> str:
     .exec-hero-metric-tile {
         background: #f8fafc;
         border: 1px solid #e4e4e7;
-        border-radius: 10px;
-        padding: 1rem 1.15rem;
+        border-radius: var(--exec-radius-card);
+        padding: var(--exec-card-pad-y) var(--exec-card-pad-x);
         box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
+        box-sizing: border-box;
     }
     .exec-hero-metric-tile.exec-hero-metric-rec {
         background: #ecfdf5;
@@ -1035,23 +1225,24 @@ def EXEC_THEME_CSS() -> str:
         background: #ffffff;
         border: 1px solid #e4e4e7;
         border-left: 4px solid #14a67f;
-        border-radius: 10px;
-        padding: 1.1rem 1.35rem;
-        margin: 0 0 1.25rem 0;
+        border-radius: var(--exec-radius-card);
+        padding: var(--exec-card-pad-y) var(--exec-card-pad-x);
+        margin: 0 0 var(--space-lg) 0;
         box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
+        box-sizing: border-box;
     }
     .exec-summary-callout p {
         margin: 0;
         color: #334155;
         font-size: 1.02rem;
-        line-height: 1.55;
+        line-height: 1.5;
     }
 
     .exec-scenario-compare-grid {
         display: grid;
         grid-template-columns: repeat(3, minmax(0, 1fr));
-        gap: 0.85rem;
-        margin: 0.5rem 0 1rem 0;
+        gap: var(--space-md);
+        margin: var(--space-sm) 0 var(--space-lg) 0;
     }
     @media (max-width: 900px) {
         .exec-scenario-compare-grid { grid-template-columns: 1fr; }
@@ -1059,9 +1250,10 @@ def EXEC_THEME_CSS() -> str:
     .exec-scenario-compare-card {
         background: #ffffff;
         border: 1px solid #e4e4e7;
-        border-radius: 10px;
-        padding: 1rem 1.2rem;
+        border-radius: var(--exec-radius-card);
+        padding: var(--exec-card-pad-y) var(--exec-card-pad-x);
         box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
+        box-sizing: border-box;
     }
     .exec-scenario-compare-card.exec-scen-rec {
         background: #ecfdf5;
@@ -1092,9 +1284,9 @@ def EXEC_THEME_CSS() -> str:
     .exec-subcard-grid {
         display: grid;
         grid-template-columns: repeat(4, minmax(0, 1fr));
-        gap: 0.85rem;
+        gap: var(--space-md);
         align-items: stretch;
-        margin: 0.5rem 0 0.75rem 0;
+        margin: var(--space-sm) 0 var(--space-lg) 0;
     }
     .exec-subcard-grid .exec-subcard {
         min-width: 0;
@@ -1116,10 +1308,11 @@ def EXEC_THEME_CSS() -> str:
     .exec-subcard {
         background: #ffffff;
         border: 1px solid #e4e4e7;
-        border-radius: 10px;
-        padding: 1rem 1.25rem;
+        border-radius: var(--exec-radius-card);
+        padding: var(--exec-card-pad-y) var(--exec-card-pad-x);
         height: 100%;
         box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
+        box-sizing: border-box;
     }
     .exec-subcard .esl {
         color: #52525b;
@@ -1142,35 +1335,40 @@ def EXEC_THEME_CSS() -> str:
     }
     /* Scenario exploration charts — title row + summary strip */
     .exec-chart-title-main {
-        margin: 0 !important;
-        padding: 0.15rem 0 0 0 !important;
+        margin: 0 0 var(--exec-gap-label-input) 0 !important;
+        padding: var(--space-xxs) var(--space-sm) 0 var(--space-sm) !important;
         color: #18181b !important;
         font-weight: 700 !important;
         font-size: 1.05rem !important;
-        line-height: 1.35 !important;
+        line-height: 1.5 !important;
     }
     .exec-chart-guide {
         font-size: 0.875rem;
         color: #3f3f46;
-        line-height: 1.55;
-        margin: 0 0 0.85rem 0;
-        padding: 0.65rem 1rem 0.7rem 1rem;
+        line-height: 1.5;
+        margin: 0 0 var(--space-sm) 0;
+        padding: var(--space-md) var(--space-lg);
         background: #f8fafc;
         border: 1px solid #e2e8f0;
-        border-radius: 10px;
+        border-radius: var(--exec-radius-card);
         border-left: 4px solid #64748b;
+        box-sizing: border-box;
     }
     .exec-muted-small .exec-field-help-wrap {
         display: inline-flex;
         vertical-align: middle;
         margin-left: 0.2rem;
     }
+    /* Section headings — dense rhythm (wizard overlays may tighten further) */
     .exec-section-title {
         color: #27272a;
         font-size: 1rem;
         font-weight: 700;
-        margin: 1.35rem 0 0.75rem 0;
+        margin: var(--space-lg) 0 var(--space-sm) 0;
+        padding: 0 var(--space-xs);
         letter-spacing: -0.01em;
+        box-sizing: border-box;
+        line-height: 1.5;
     }
     .exec-muted {
         color: #52525b;
@@ -1181,7 +1379,9 @@ def EXEC_THEME_CSS() -> str:
         color: #52525b;
         font-size: 0.95rem;
         line-height: 1.5;
-        margin: 0.35rem 0 0.75rem 0;
+        margin: var(--exec-text-mt) 0 var(--exec-text-mb) 0;
+        padding: 0 var(--space-xs);
+        box-sizing: border-box;
     }
 
     .exec-rec-card {
@@ -1194,8 +1394,9 @@ def EXEC_THEME_CSS() -> str:
         color: #18181b !important;
         font-weight: 700 !important;
         letter-spacing: -0.02em !important;
-        margin-top: 0.15rem !important;
-        margin-bottom: 0.35rem !important;
+        margin-top: var(--exec-text-mt) !important;
+        margin-bottom: var(--exec-gap-label-input) !important;
+        line-height: 1.35 !important;
     }
     h2, h3 { color: #27272a !important; }
 
@@ -1205,6 +1406,11 @@ def EXEC_THEME_CSS() -> str:
         color: #52525b !important;
         font-size: 0.95rem !important;
         opacity: 1 !important;
+    }
+    section.main [data-testid="stCaptionContainer"],
+    section.main .stCaption {
+        margin-top: var(--exec-gap-input-helper) !important;
+        margin-bottom: var(--exec-gap-helper-next) !important;
     }
 
     /* Finance loader overlay (model / prediction / simulations) */
@@ -1219,7 +1425,7 @@ def EXEC_THEME_CSS() -> str:
     .exec-ml-panel {
         border: 1px solid #e4e4e7;
         border-radius: 12px;
-        padding: 2rem 2rem 1.75rem;
+        padding: 1.5rem 1.65rem 1.35rem;
         margin: 0 0 1rem 0;
         background: linear-gradient(165deg, #fafafa 0%, #ffffff 55%);
         text-align: center;
@@ -1263,7 +1469,7 @@ def EXEC_THEME_CSS() -> str:
         height: 100vh !important;
         z-index: 100002 !important;
         margin: 0 !important;
-        padding: 2rem 1rem !important;
+        padding: 1.5rem 1.15rem !important;
         box-sizing: border-box !important;
         background: rgba(247, 248, 250, 0.98) !important;
         backdrop-filter: blur(10px) !important;
@@ -1302,6 +1508,92 @@ def EXEC_THEME_CSS() -> str:
         background: #FFFFFF !important;
         padding: 0.4rem 0.55rem !important;
         box-shadow: none !important;
+    }
+
+    /*
+     * Equal-height bordered cards (analysis view — same rules as wizard overlay CSS).
+     */
+    .main div[data-testid="stHorizontalBlock"]:not(:has([data-testid="stButton"])):has([data-testid="column"] [data-testid="stVerticalBlockBorderWrapper"]) {
+        align-items: stretch !important;
+    }
+    .main div[data-testid="stHorizontalBlock"]:not(:has([data-testid="stButton"])) [data-testid="column"]:has([data-testid="stVerticalBlockBorderWrapper"]) {
+        display: flex !important;
+        flex-direction: column !important;
+        align-items: stretch !important;
+        align-self: stretch !important;
+    }
+    .main div[data-testid="stHorizontalBlock"]:not(:has([data-testid="stButton"])) [data-testid="column"]:has([data-testid="stVerticalBlockBorderWrapper"]) > div[data-testid="element-container"] {
+        flex: 1 1 auto !important;
+        display: flex !important;
+        flex-direction: column !important;
+        min-height: 0 !important;
+    }
+    .main div[data-testid="stHorizontalBlock"]:not(:has([data-testid="stButton"])) [data-testid="column"]:has([data-testid="stVerticalBlockBorderWrapper"]) [data-testid="stVerticalBlockBorderWrapper"] {
+        flex: 1 1 auto !important;
+        min-height: 0 !important;
+        height: 100% !important;
+        box-sizing: border-box !important;
+    }
+    .main div[data-testid="stHorizontalBlock"]:has([data-testid="stButton"]) {
+        display: flex !important;
+        flex-direction: row !important;
+        align-items: center !important;
+        gap: var(--space-md) !important;
+        padding: var(--exec-btn-row-mt) 0 var(--space-md) 0 !important;
+        margin: 0 !important;
+        background: transparent !important;
+    }
+    .main div[data-testid="stHorizontalBlock"]:has([data-testid="stButton"]) [data-testid="stVerticalBlockBorderWrapper"] {
+        border: none !important;
+        border-width: 0 !important;
+        box-shadow: none !important;
+        border-radius: 0 !important;
+        padding: 0 !important;
+        margin: 0 !important;
+        background: transparent !important;
+        min-height: 0 !important;
+        height: auto !important;
+    }
+    .main div[data-testid="stHorizontalBlock"]:has([data-testid="stButton"]) [data-testid="column"] {
+        border: none !important;
+        background: transparent !important;
+    }
+    .main div[data-testid="stHorizontalBlock"]:has([data-testid="stButton"]) [data-testid="stVerticalBlock"] {
+        gap: 0 !important;
+        padding: 0 !important;
+        background: transparent !important;
+    }
+    .main div[data-testid="stHorizontalBlock"]:has(.exec-chart-pair-anchor) {
+        align-items: stretch !important;
+        align-content: stretch !important;
+        padding: 0 !important;
+        margin: 0 !important;
+    }
+    .main div[data-testid="stHorizontalBlock"]:has(.exec-chart-pair-anchor) [data-testid="column"] {
+        display: flex !important;
+        flex-direction: column !important;
+        align-items: stretch !important;
+        align-self: stretch !important;
+    }
+    .main div[data-testid="stHorizontalBlock"]:has(.exec-chart-pair-anchor)
+        [data-testid="column"]:has([data-testid="stVerticalBlockBorderWrapper"]) > div[data-testid="element-container"] {
+        flex: 1 1 auto !important;
+        display: flex !important;
+        flex-direction: column !important;
+        min-height: 0 !important;
+    }
+    .main div[data-testid="stHorizontalBlock"]:has(.exec-chart-pair-anchor)
+        [data-testid="stVerticalBlockBorderWrapper"] {
+        flex: 1 1 auto !important;
+        min-height: 0 !important;
+        height: 100% !important;
+        box-sizing: border-box !important;
+        border: 1px solid #E5E7EB !important;
+        border-radius: var(--exec-radius-card) !important;
+        box-shadow: 0 1px 2px rgba(17, 24, 39, 0.04) !important;
+        padding: var(--exec-chart-pad) !important;
+        margin-bottom: var(--exec-field-group-mb) !important;
+        background: #FFFFFF !important;
     }
 </style>
 """
@@ -2766,6 +3058,41 @@ SLIDER_RANGE_ANCHORS: dict[str, tuple[str, str, str]] = {
     ),
 }
 
+# One-line wizard hints under continuous sliders; full Low/Mid/High lives in an expander.
+SLIDER_RANGE_VISIBLE_SUMMARY: dict[str, str] = {
+    "sb_fico_score": "Higher scores improve approval odds and pricing posture.",
+    "sb_monthly_income": "Higher incomes ease payment stress versus obligations.",
+    "sb_monthly_debt_payments": "Higher obligations tighten affordability versus gross income.",
+    "sb_model_year": "Newer years signal fresher metal and stronger lender optics.",
+    "sb_vehicle_price": "Higher tickets amplify payment and rate sensitivity.",
+    "sb_vehicle_age": "Older units shift story toward depreciation and warranty risk.",
+    "sb_residual_support_pct_display": "Higher OEM lift sweetens lease/FI economics.",
+    "sb_avg_monthly_retail_units": "Higher throughput absorbs support more easily.",
+    "sb_dealer_margin_pct_display": "More front-end percent leaves room before reserve.",
+    "sb_expected_unit_margin": "Higher dollars-per-car funds aggressive retailing.",
+    "sb_days_in_inventory": "Older days invite discount and support pressure.",
+    "sb_on_hand_units": "Deep ground stock ties capital; shallow risks stockouts.",
+    "sb_in_transit_units": "Inbound waves ease allocation risk on hot trims.",
+    "sb_aging_inventory_pct_display": "High aged share raises fire-sale and support risk.",
+    "sb_loan_amount": "Larger balances magnify payment and rate sensitivity.",
+    "sb_down_payment": "More cash-in lowers LTV and eases lender optics.",
+    "sb_standard_apr": "Higher retail APR reflects macro or credit tier stress.",
+    "sb_dealer_apr": "Posted APR after programs sets the customer payment story.",
+    "sb_dealer_monthly_payment": "Payment anchors shopper tolerance and stip risk.",
+    "sb_customer_cash": "Large OEM/customer cash dominates headline competitiveness.",
+    "sb_dealer_cash": "Discretionary dealer cash funds margin wars.",
+    "sb_loyalty_cash": "Retention bounties defend repeat captives.",
+    "sb_conquest_cash": "Switch-in dollars steal rival owners.",
+    "sb_competitor_apr": "Bench rival APR to position buy-rate support.",
+    "sb_competitor_monthly_payment": "Use rival payment as the shopper anchor.",
+    "sb_competitor_cashback": "Heavy competitor rebates force a cash response.",
+    "sb_fed_rate": "Higher policy rates lift captive and bank funding costs.",
+    "sb_ten_year": "Long yields steer budgeting curves and payment appetite.",
+    "sb_inflation_cpi": "Inflation shifts sticker–rebate gaps and sensitivity.",
+    "sb_base_auto_rate_index": "Higher internal benchmarks tighten standard tiers.",
+    "sb_market_rate_index": "Market APR index sets shopper rate expectations.",
+    "sb_cost_multiplier": "Higher modeled cost makes each bps of support expensive.",
+}
 
 # Rich dropdown labels — canonical stored value unchanged in session_state.
 MAKE_OPTION_LABELS: dict[str, str] = {
@@ -2994,40 +3321,44 @@ def EXEC_WIZARD_DEMO_UI_CSS() -> str:
     """Executive wizard: centered layout, slate accents, no sidebar (pre-submit only)."""
     return """
 <style>
+    /* Spacing tokens defined in EXEC_THEME_CSS (:root); applied here for wizard chrome + rhythm */
+
     section[data-testid="stSidebar"] { display: none !important; }
     /* Do not hide collapsedControl: Streamlit puts the widget help (?) there when
        label_visibility="collapsed". Hiding it removes every native tooltip in the wizard. */
 
-    .stMainBlockContainer { background: #F7F8FA !important; padding-top: 0.5rem !important; }
+    .stMainBlockContainer { background: #F7F8FA !important; padding-top: var(--space-xxs) !important; }
     .main .block-container {
         max-width: 1180px !important;
         margin-left: auto !important;
         margin-right: auto !important;
-        padding-top: 0.25rem !important;
-        padding-left: 1.25rem !important;
-        padding-right: 1.25rem !important;
+        padding-top: var(--space-xs) !important;
+        padding-left: var(--exec-page-gutter-x) !important;
+        padding-right: var(--exec-page-gutter-x) !important;
+        padding-bottom: var(--space-md) !important;
+        box-sizing: border-box !important;
     }
     [data-testid="stHeader"] { background: #F7F8FA !important; border-bottom: 1px solid #E5E7EB !important; }
     [data-testid="stDecoration"] { display: none !important; }
 
-    /* Page title — centered above wizard card, same max-width as content */
+    /* Hero — short vertical footprint */
     .demo-hero {
         box-sizing: border-box !important;
         max-width: 1180px !important;
         margin-left: auto !important;
         margin-right: auto !important;
-        margin-bottom: 1.25rem !important;
-        padding: 0.35rem 1rem 1rem 1rem !important;
+        margin-bottom: var(--space-xs) !important;
+        padding: var(--space-xxs) var(--exec-page-gutter-x) var(--space-xxs) var(--exec-page-gutter-x) !important;
         text-align: center !important;
     }
     .demo-hero-title {
         display: block !important;
         color: #111827 !important;
-        font-size: clamp(1.5rem, 3.5vw, 2rem) !important;
+        font-size: 34px !important;
         font-weight: 700 !important;
-        letter-spacing: -0.035em !important;
-        line-height: 1.15 !important;
-        margin: 0 auto 0.5rem auto !important;
+        letter-spacing: -0.03em !important;
+        line-height: 1.2 !important;
+        margin: 0 auto 4px auto !important;
         padding: 0 !important;
         text-align: center !important;
         max-width: 56rem !important;
@@ -3035,107 +3366,130 @@ def EXEC_WIZARD_DEMO_UI_CSS() -> str:
     .demo-hero-sub {
         display: block !important;
         color: #6B7280 !important;
-        font-size: 1rem !important;
+        font-size: 15px !important;
         font-weight: 400 !important;
-        margin: 0 auto !important;
+        margin: 0 auto 20px auto !important;
         padding: 0 !important;
-        line-height: 1.5 !important;
+        line-height: 1.45 !important;
         text-align: center !important;
         max-width: 40rem !important;
     }
 
+    /* Card chrome only — padding/margin come from EXEC_THEME_CSS (single source of truth). */
     [data-testid="stVerticalBlockBorderWrapper"] {
         background: #FFFFFF !important;
         border: 1px solid #E5E7EB !important;
-        border-radius: 14px !important;
+        border-radius: var(--exec-radius-card) !important;
         box-shadow: 0 1px 2px rgba(17, 24, 39, 0.04) !important;
-        padding: 0.65rem 0.85rem 0.75rem 0.85rem !important;
-        margin-bottom: 0.65rem !important;
     }
 
     /* Scroll-to-top targets this wrapper (long steps keep the step header in view). */
     .wizard-step-scroll-target {
-        scroll-margin-top: 4.5rem;
+        scroll-margin-top: var(--space-lg);
     }
+    /* Subtitle → step meta: 20px + 4px = 24px; meta → step title ≤12px */
     .demo-step-meta {
-        font-size: 0.75rem;
+        font-size: 0.72rem;
         font-weight: 600;
         letter-spacing: 0.06em;
         text-transform: uppercase;
         color: #6B7280;
-        margin: 0 0 0.35rem 0;
+        margin: 4px 0 12px 0;
     }
     .demo-step-title {
         color: #111827;
-        font-size: 1.35rem;
+        font-size: 1.2rem;
         font-weight: 700;
         letter-spacing: -0.02em;
-        margin: 0 0 1rem 0;
-        line-height: 1.25;
+        margin: 0 0 4px 0;
+        line-height: 1.3;
     }
 
+    /* Step title → first section: 4px + 20px = 24px; section bands per type */
     .demo-section-title {
-        font-size: 0.7rem;
+        font-size: 0.68rem;
         font-weight: 700;
         letter-spacing: 0.08em;
         text-transform: uppercase;
         color: #9CA3AF;
-        margin: 1.25rem 0 0.65rem 0;
-        padding-bottom: 0.35rem;
+        margin: 20px 0 14px 0;
+        padding-bottom: var(--space-xs);
         border-bottom: 1px solid #F3F4F6;
+        line-height: 1.45;
     }
 
     .demo-field-label {
         display: flex;
         align-items: center;
         flex-wrap: wrap;
-        gap: 0.35rem;
+        gap: var(--space-xs);
         font-size: 0.8125rem;
         font-weight: 600;
         color: #111827;
-        margin: 0 0 0.35rem 0;
-        line-height: 1.3;
+        margin: 0 0 8px 0;
+        line-height: 1.45;
     }
     .demo-field-hint {
-        font-size: 0.78rem !important;
+        font-size: 0.8125rem !important;
         color: #6B7280 !important;
-        margin: 0.1rem 0 0.45rem 0 !important;
-        line-height: 1.35 !important;
+        margin: var(--space-sm) 0 var(--space-md) 0 !important;
+        line-height: 1.5 !important;
+        padding: 0 var(--space-xxs) !important;
+    }
+    .demo-field-hint--short {
+        font-size: 0.8125rem !important;
+        margin: var(--space-sm) 0 var(--space-md) 0 !important;
+        line-height: 1.5 !important;
+        color: #64748B !important;
+        padding: 0 var(--space-xxs) !important;
     }
 
-    .demo-metric-pill {
-        background: #F3F4F6;
-        border: 1px solid #E5E7EB;
-        border-radius: 10px;
-        padding: 0.75rem 1rem;
-        margin-top: 0.25rem;
+    /* Computed DTI — compact KPI band */
+    .demo-kpi-card {
+        box-sizing: border-box;
+        margin-top: var(--space-sm);
+        padding: var(--exec-kpi-pad);
+        border-radius: var(--exec-radius-card);
+        border: 1px solid #bae6fd;
+        background: linear-gradient(145deg, #f0f9ff 0%, #f8fafc 55%, #ffffff 100%);
+        box-shadow: 0 2px 8px rgba(14, 165, 233, 0.07);
     }
-    .demo-metric-pill-label {
+    .demo-kpi-value {
+        font-size: 2rem;
+        font-weight: 800;
+        letter-spacing: -0.03em;
+        line-height: 1.1;
+        color: #0c4a6e;
+        margin: 0;
+    }
+    .demo-kpi-label {
         display: flex;
         align-items: center;
         flex-wrap: wrap;
-        gap: 0.35rem;
-        font-size: 0.72rem;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-        color: #6B7280;
-        margin-bottom: 0.25rem;
-    }
-    .demo-metric-pill-value {
-        font-size: 1.35rem;
+        gap: var(--space-xs);
+        margin-top: var(--exec-kpi-val-lbl);
+        font-size: 0.68rem;
         font-weight: 700;
-        color: #111827;
-        letter-spacing: -0.02em;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: #64748b;
+        line-height: 1.45;
     }
-    .demo-metric-pill-help {
-        font-size: 0.78rem;
-        color: #6B7280;
-        margin: 0.5rem 0 0 0;
-        line-height: 1.35;
+    .demo-kpi-status {
+        margin-top: var(--exec-kpi-lbl-sub);
+        font-size: 0.8125rem;
+        line-height: 1.5;
+        color: #475569;
     }
 
-    .demo-nav-row { margin-top: 0.5rem; padding-top: 1rem; border-top: 1px solid #F3F4F6; align-items: center; }
+    .demo-nav-row {
+        margin-top: var(--space-lg);
+        padding-top: var(--space-md);
+        padding-bottom: var(--space-sm);
+        border-top: 1px solid #F3F4F6;
+        align-items: center;
+        gap: var(--space-md);
+    }
 
     button[kind="primary"] {
         background-color: #334155 !important;
@@ -3157,6 +3511,48 @@ def EXEC_WIZARD_DEMO_UI_CSS() -> str:
     .main [data-testid="column"] div[data-testid="stVerticalBlock"] > div[data-testid="element-container"]:has(.stTextInput) {
         padding-top: 0 !important;
         padding-bottom: 0 !important;
+    }
+
+    /* Wizard columns — 24px gutter */
+    .main:has(.demo-hero) div[data-testid="stHorizontalBlock"] {
+        gap: var(--space-lg) !important;
+    }
+    /* Wizard stacks — tight vertical rhythm */
+    .main:has(.demo-hero) [data-testid="stVerticalBlock"] {
+        gap: var(--space-sm) !important;
+    }
+    .main:has(.demo-hero) [data-testid="stVerticalBlockBorderWrapper"] {
+        padding: var(--exec-card-pad) !important;
+        margin-bottom: var(--exec-field-group-mb) !important;
+        min-height: 0 !important;
+        height: auto !important;
+    }
+    /* Inside slider cards: label↔slider↔exact value chain */
+    .main:has(.demo-hero) [data-testid="stVerticalBlockBorderWrapper"] .stSlider {
+        margin-top: 0 !important;
+        margin-bottom: 10px !important;
+    }
+    .main:has(.demo-hero) [data-testid="stVerticalBlockBorderWrapper"] [data-testid="stCaptionContainer"] {
+        margin-top: 8px !important;
+        margin-bottom: 0 !important;
+        padding-top: 0 !important;
+        padding-bottom: 0 !important;
+    }
+    .main:has(.demo-hero) [data-testid="stVerticalBlockBorderWrapper"] [data-testid="stTextInput"] {
+        margin-top: 6px !important;
+    }
+    .main:has(.demo-hero) div[data-baseweb="slider"] {
+        padding-top: 0 !important;
+        padding-bottom: 0 !important;
+    }
+    .main:has(.demo-hero) .stSlider [data-testid="stThumbValue"] {
+        font-size: 0.75rem !important;
+        margin-bottom: 2px !important;
+        color: #475569 !important;
+    }
+    .main:has(.demo-hero) [data-testid="stExpander"] {
+        margin-top: var(--space-sm) !important;
+        margin-bottom: var(--space-md) !important;
     }
 
     /*
@@ -3195,105 +3591,7 @@ def EXEC_WIZARD_DEMO_UI_CSS() -> str:
         line-height: 1.35 !important;
     }
 
-    /*
-     * Equal-height bordered cards in two-column rows (Customer Profile, etc.): stretch the
-     * shorter card to match the taller peer. Scoped to rows that contain bordered wrappers
-     * and never to the footer row (:not(:has([data-testid="stButton"]))).
-     */
-    .main div[data-testid="stHorizontalBlock"]:not(:has([data-testid="stButton"])):has([data-testid="column"] [data-testid="stVerticalBlockBorderWrapper"]) {
-        align-items: stretch !important;
-    }
-    .main div[data-testid="stHorizontalBlock"]:not(:has([data-testid="stButton"])) [data-testid="column"]:has([data-testid="stVerticalBlockBorderWrapper"]) {
-        display: flex !important;
-        flex-direction: column !important;
-        align-items: stretch !important;
-        align-self: stretch !important;
-    }
-    .main div[data-testid="stHorizontalBlock"]:not(:has([data-testid="stButton"])) [data-testid="column"]:has([data-testid="stVerticalBlockBorderWrapper"]) > div[data-testid="element-container"] {
-        flex: 1 1 auto !important;
-        display: flex !important;
-        flex-direction: column !important;
-        min-height: 0 !important;
-    }
-    .main div[data-testid="stHorizontalBlock"]:not(:has([data-testid="stButton"])) [data-testid="column"]:has([data-testid="stVerticalBlockBorderWrapper"]) [data-testid="stVerticalBlockBorderWrapper"] {
-        flex: 1 1 auto !important;
-        min-height: 0 !important;
-        height: 100% !important;
-        box-sizing: border-box !important;
-    }
-
-    /*
-     * Wizard footer ONLY (Back / Next): must NOT use :has(button) — selectboxes, sliders,
-     * and other widgets embed native <button> inside column rows, so that matched Vehicle &
-     * Product and broke the grid. Streamlit wraps st.button in [data-testid="stButton"].
-     */
-    .main div[data-testid="stHorizontalBlock"]:has([data-testid="stButton"]) {
-        display: flex !important;
-        flex-direction: row !important;
-        align-items: center !important;
-        gap: 0 !important;
-        padding: 0.75rem 0 0 0 !important;
-        margin: 0 !important;
-        background: transparent !important;
-    }
-    .main div[data-testid="stHorizontalBlock"]:has([data-testid="stButton"]) [data-testid="stVerticalBlockBorderWrapper"] {
-        border: none !important;
-        border-width: 0 !important;
-        box-shadow: none !important;
-        border-radius: 0 !important;
-        padding: 0 !important;
-        margin: 0 !important;
-        background: transparent !important;
-        min-height: 0 !important;
-        height: auto !important;
-    }
-    .main div[data-testid="stHorizontalBlock"]:has([data-testid="stButton"]) [data-testid="column"] {
-        border: none !important;
-        background: transparent !important;
-    }
-    .main div[data-testid="stHorizontalBlock"]:has([data-testid="stButton"]) [data-testid="stVerticalBlock"] {
-        gap: 0 !important;
-        padding: 0 !important;
-        background: transparent !important;
-    }
-
-    /*
-     * Offer analytics chart pair + popovers: the footer-row rule above matches any row with
-     * [data-testid="stButton"] (includes ? popovers), forcing align-items:center and stripping
-     * borders from bordered containers — cards stay different heights and tops drift. Anchor wins.
-     */
-    .main div[data-testid="stHorizontalBlock"]:has(.exec-chart-pair-anchor) {
-        align-items: stretch !important;
-        align-content: stretch !important;
-        padding: 0 !important;
-        margin: 0 !important;
-    }
-    .main div[data-testid="stHorizontalBlock"]:has(.exec-chart-pair-anchor) [data-testid="column"] {
-        display: flex !important;
-        flex-direction: column !important;
-        align-items: stretch !important;
-        align-self: stretch !important;
-    }
-    .main div[data-testid="stHorizontalBlock"]:has(.exec-chart-pair-anchor)
-        [data-testid="column"]:has([data-testid="stVerticalBlockBorderWrapper"]) > div[data-testid="element-container"] {
-        flex: 1 1 auto !important;
-        display: flex !important;
-        flex-direction: column !important;
-        min-height: 0 !important;
-    }
-    .main div[data-testid="stHorizontalBlock"]:has(.exec-chart-pair-anchor)
-        [data-testid="stVerticalBlockBorderWrapper"] {
-        flex: 1 1 auto !important;
-        min-height: 0 !important;
-        height: 100% !important;
-        box-sizing: border-box !important;
-        border: 1px solid #E5E7EB !important;
-        border-radius: 14px !important;
-        box-shadow: 0 1px 2px rgba(17, 24, 39, 0.04) !important;
-        padding: 0.65rem 0.85rem 0.75rem 0.85rem !important;
-        margin-bottom: 0.65rem !important;
-        background: #FFFFFF !important;
-    }
+    /* Horizontal row / chart-pair layout lives in EXEC_THEME_CSS (always loaded). */
 </style>
 """
 
@@ -3324,50 +3622,69 @@ def init_session_state() -> None:
         st.session_state.analysis_compute_requested = False
 
 
-def _slider_scale_anchor_html(state_key: str, *, css_class: str) -> str | None:
-    triple = SLIDER_SCALE_ANCHORS.get(state_key)
-    if not triple:
-        return None
-    a1, a5, a10 = triple
+def _scale_guide_columns_html(low_text: str, mid_text: str, high_text: str) -> str:
+    """Compact 3-column markup for 1 / 5 / 10 anchor copy (plain text, escaped)."""
+
+    def _col(num: str, tier: str, body: str) -> str:
+        return (
+            f'<div class="exec-scale-guide__col">'
+            f'<span class="exec-scale-guide__num">{html.escape(num)}</span>'
+            f'<span class="exec-scale-guide__tier">{html.escape(tier)}</span>'
+            f'<p class="exec-scale-guide__txt">{html.escape(body)}</p>'
+            f"</div>"
+        )
+
     return (
-        f'<p class="{html.escape(css_class)}">'
-        f'<strong>1</strong> — {html.escape(a1)}<br/>'
-        f'<strong>5</strong> — {html.escape(a5)}<br/>'
-        f'<strong>10</strong> — {html.escape(a10)}'
-        "</p>"
+        '<div class="exec-scale-guide" role="region" aria-label="Scale guide">'
+        '<div class="exec-scale-guide__grid">'
+        f'{_col("1", "Low", low_text)}'
+        f'{_col("5", "Moderate", mid_text)}'
+        f'{_col("10", "High", high_text)}'
+        "</div></div>"
     )
+
+
+def render_scale_guide(low_text: str, mid_text: str, high_text: str) -> None:
+    """Compact 1–10 reference: one-line legend + collapsible 3-column Low / Moderate / High guide."""
+    st.markdown(
+        '<p class="exec-scale-hint">1 = low · 5 = moderate · 10 = high</p>',
+        unsafe_allow_html=True,
+    )
+    with st.expander("Scale guide", expanded=False):
+        st.markdown(
+            _scale_guide_columns_html(low_text, mid_text, high_text),
+            unsafe_allow_html=True,
+        )
 
 
 def _slider_scale_caption(state_key: str, *, wizard: bool = False) -> None:
     if not wizard:
         return
-    css = "demo-field-hint" if wizard else "exec-slider-hint"
-    block = _slider_scale_anchor_html(state_key, css_class=css)
-    if block:
-        st.markdown(block, unsafe_allow_html=True)
-
-
-def _slider_range_anchor_html(state_key: str, *, css_class: str) -> str | None:
-    triple = SLIDER_RANGE_ANCHORS.get(state_key)
+    triple = SLIDER_SCALE_ANCHORS.get(state_key)
     if not triple:
-        return None
-    lo, mid, hi = triple
-    return (
-        f'<p class="{html.escape(css_class)}">'
-        f'<strong>Low</strong> — {html.escape(lo)}<br/>'
-        f'<strong>Mid</strong> — {html.escape(mid)}<br/>'
-        f'<strong>High</strong> — {html.escape(hi)}'
-        "</p>"
-    )
+        return
+    render_scale_guide(triple[0], triple[1], triple[2])
 
 
 def _slider_range_caption(state_key: str, *, wizard: bool = False) -> None:
     if not wizard:
         return
-    css = "demo-field-hint" if wizard else "exec-slider-hint"
-    block = _slider_range_anchor_html(state_key, css_class=css)
-    if block:
-        st.markdown(block, unsafe_allow_html=True)
+    triple = SLIDER_RANGE_ANCHORS.get(state_key)
+    if not triple:
+        return
+    summary = SLIDER_RANGE_VISIBLE_SUMMARY.get(state_key)
+    if summary:
+        st.markdown(
+            f'<p class="demo-field-hint demo-field-hint--short">{html.escape(summary)}</p>',
+            unsafe_allow_html=True,
+        )
+    detail = (
+        f"<strong>Low</strong> — {_inline_md_bold_to_html(triple[0])}<br/>"
+        f"<strong>Mid</strong> — {_inline_md_bold_to_html(triple[1])}<br/>"
+        f"<strong>High</strong> — {_inline_md_bold_to_html(triple[2])}"
+    )
+    with st.expander("Full scale detail", expanded=False):
+        st.markdown(detail, unsafe_allow_html=True)
 
 
 def _two_cols(wizard: bool):
@@ -3563,6 +3880,21 @@ def _business_dti_ratio() -> float:
     if mi <= 0:
         return 0.0
     return float(min(max(debt / mi, 0.0), 1.5))
+
+
+def _dti_status_tagline() -> str:
+    """Short underwriting-style readout under the DTI KPI."""
+    mi = float(st.session_state.get("sb_monthly_income") or 0)
+    if mi <= 0:
+        return "Enter gross income and debt payments to compute."
+    pct = 100.0 * _business_dti_ratio()
+    if pct < 28:
+        return "Healthy affordability range."
+    if pct < 36:
+        return "Moderate — monitor payment stress."
+    if pct < 43:
+        return "Elevated — expect tighter underwriting."
+    return "High — affordability risk dominates the file."
 
 
 def _sb_row_label_help(
@@ -3951,12 +4283,17 @@ def render_section_header(title: str) -> None:
     )
 
 
-def render_metric_pill(label: str, value: str, help_text: str) -> None:
+def render_dti_kpi_card() -> None:
+    """Computed debt-to-income as a compact executive KPI block."""
+    val = _computed_dti_ratio_display()
+    help_md = "Calculated from monthly debt payments ÷ monthly gross income."
+    status = _dti_status_tagline()
     st.markdown(
-        f'<div class="demo-metric-pill">'
-        f'<span class="demo-metric-pill-label">{html.escape(label)}{_help_icon_html(help_text)}</span>'
-        f'<span class="demo-metric-pill-value">{html.escape(value)}</span></div>'
-        f'<p class="demo-metric-pill-help">{html.escape(help_text)}</p>',
+        f'<div class="demo-kpi-card">'
+        f'<div class="demo-kpi-value">{html.escape(val)}</div>'
+        f'<div class="demo-kpi-label">Debt-to-Income Ratio{_help_icon_html(help_md)}</div>'
+        f'<div class="demo-kpi-status">{html.escape(status)}</div>'
+        f"</div>",
         unsafe_allow_html=True,
     )
 
@@ -4039,11 +4376,7 @@ def render_customer_profile_wizard() -> None:
             help_text="Customer gross income before taxes, per month.",
         )
         _slider_range_caption("sb_monthly_income", wizard=True)
-        render_metric_pill(
-            "Computed debt-to-income",
-            _computed_dti_ratio_display(),
-            "Calculated from monthly debt payments ÷ monthly gross income.",
-        )
+        render_dti_kpi_card()
 
     render_section_header("Intent & Preference")
     in_a, in_b = _wizard_pair_columns()
@@ -4146,9 +4479,9 @@ def _wizard_footer_columns(spec: list[float]):
 
 
 def _wizard_pair_columns():
-    """Two columns for wizard body rows; compact gap when supported."""
+    """Two columns for wizard body rows; 24px gutter when supported."""
     try:
-        return st.columns(2, gap="small")
+        return st.columns(2, gap="large")
     except TypeError:
         return st.columns(2)
     except Exception as e:
