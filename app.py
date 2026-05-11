@@ -187,11 +187,23 @@ def open_edit_section(section: str) -> None:
 
 
 def go_to_wizard() -> None:
-    MODEL.state["ui_mode"] = "wizard"
+    """Full session reset: demo defaults, wizard step 1, cleared results and UI chrome."""
+    _tear_down_edit_drawer()
+    LOADING_OVERLAY.close()
+    fresh = session_defaults_from_demo()
+    fresh["ui_mode"] = "wizard"
+    fresh["wizard_step"] = 0
+    fresh.setdefault("dashboard_edit_section", "customer")
+    MODEL.state = fresh
+    MODEL.demo_defaults = get_demo_defaults()
     MODEL.result_df = None
     MODEL.rec_row = None
     MODEL.aggressive_row = None
+    MODEL.baseline_p = 0.0
     MODEL.feasible_n = 0
+    MODEL.meta = {}
+    MODEL.relaxed = False
+    MODEL.last_error = None
     main_body.refresh()
 
 

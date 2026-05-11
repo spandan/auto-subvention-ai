@@ -25,8 +25,10 @@ from ui.theme import BORDER, TEXT_SECONDARY
 from ui.wizard import render_section_for_edit
 
 
-# Cap UI + export so we never bind huge scenario grids to the browser.
+# Excel export cap (full ranked slice for analysts).
 SCENARIOS_TABLE_TOP_N = 100
+# Dashboard table: current + recommended + aggressive + top conversion fill.
+SCENARIOS_TABLE_UI_MAX = 10
 
 
 # --- Formatting ----------------------------------------------------------------------
@@ -61,6 +63,61 @@ _SCENARIO_REC_KEYS = (
 
 def _row_matches_recommendation(r: pd.Series, rec: pd.Series) -> bool:
     return bool(all(r[k] == rec[k] for k in _SCENARIO_REC_KEYS))
+
+
+def _df_row_index_for_series(df: pd.DataFrame, target: pd.Series) -> int | None:
+    """First `df` row index whose scenario levers match `target` (same keys as recommendation match)."""
+    if df.empty:
+        return None
+    for i in range(len(df)):
+        r = df.iloc[i]
+        try:
+            if all(r[k] == target[k] for k in _SCENARIO_REC_KEYS):
+                return i
+        except (KeyError, TypeError, ValueError):
+            continue
+    return None
+
+
+def _curated_scenario_rows(
+    df: pd.DataFrame,
+    *,
+    rec: pd.Series,
+    aggressive: pd.Series,
+    baseline_match: pd.Series | None,
+    max_rows: int = SCENARIOS_TABLE_UI_MAX,
+) -> list[tuple[str, int, pd.Series]]:
+    """
+    Table order: current (baseline levers if present in grid), recommended, aggressive,
+    then highest-conversion rows until `max_rows`.
+    Each tuple is (kind, iloc_index, row) with kind in current|recommended|aggressive|top.
+    """
+    ordered: list[tuple[str, int]] = []
+    seen: set[int] = set()
+
+    def try_add(kind: str, target: pd.Series | None) -> None:
+        if target is None:
+            return
+        ix = _df_row_index_for_series(df, target)
+        if ix is None or ix in seen:
+            return
+        seen.add(ix)
+        ordered.append((kind, ix))
+
+    try_add("current", baseline_match)
+    try_add("recommended", rec)
+    try_add("aggressive", aggressive)
+
+    order = np.argsort(-df["conversion_probability"].to_numpy(), kind="mergesort")
+    for pos in order:
+        i = int(pos)
+        if len(ordered) >= max_rows:
+            break
+        if i in seen:
+            continue
+        seen.add(i)
+        ordered.append(("top", i))
+    return [(kind, i, df.iloc[i]) for kind, i in ordered]
 
 
 def top_scenarios_ranked(df: pd.DataFrame, *, n: int = SCENARIOS_TABLE_TOP_N) -> pd.DataFrame:
@@ -468,7 +525,7 @@ def render_left_summary_panel(
                 "unelevated dense no-caps"
             ).classes("btn-dash btn-dash-primary")
             ui.button(
-                "Start New Scenario",
+                "Start over",
                 on_click=go_wizard,
             ).props("outline dense no-caps").classes("btn-dash rail-run-outline")
 
@@ -665,16 +722,26 @@ def render_offer_comparison(
                 _tri_cell(c)
 
 
-def render_top_scenarios_table(df: pd.DataFrame, rec: pd.Series) -> None:
-    """Show up to SCENARIOS_TABLE_TOP_N rows by predicted conversion — never full grid."""
-    sliced = top_scenarios_ranked(df, n=SCENARIOS_TABLE_TOP_N).reset_index(drop=True)
-    sliced.insert(0, "rank", range(1, len(sliced) + 1))
-
+def render_top_scenarios_table(
+    df: pd.DataFrame,
+    rec: pd.Series,
+    aggressive: pd.Series,
+    *,
+    baseline_match: pd.Series | None,
+) -> None:
+    """Curated rows: current (if in grid), recommended, aggressive, then top conversion (cap 10)."""
+    curated = _curated_scenario_rows(
+        df,
+        rec=rec,
+        aggressive=aggressive,
+        baseline_match=baseline_match,
+        max_rows=SCENARIOS_TABLE_UI_MAX,
+    )
     total_eval = len(df)
 
     cols = [
-        {"name": "rank", "label": "Rank", "field": "rank"},
-        {"name": "rec", "label": "Recommendation", "field": "rec"},
+        {"name": "rank", "label": "#", "field": "rank"},
+        {"name": "rec", "label": "Scenario", "field": "rec"},
         {"name": "apr", "label": "Dealer APR", "field": "apr"},
         {"name": "pmt", "label": "Monthly payment", "field": "pmt"},
         {"name": "term", "label": "Term", "field": "term"},
@@ -689,32 +756,44 @@ def render_top_scenarios_table(df: pd.DataFrame, rec: pd.Series) -> None:
         {"name": "ev", "label": "Economic score", "field": "ev"},
     ]
 
+    tag_for_kind = {
+        "current": "● Current offer",
+        "recommended": "● Recommended",
+        "aggressive": "● Aggressive",
+        "top": "",
+    }
+
     rows_out: list[dict[str, Any]] = []
-    for _, r in sliced.iterrows():
-        is_rec = _row_matches_recommendation(r, rec)
-        rows_out.append({
-            "rank": int(r["rank"]),
-            "isRecommended": bool(is_rec),
-            "rec": "● Recommended" if is_rec else "",
-            "apr": f"{float(r['scenario_dealer_apr']):.3f}",
-            "pmt": f"{float(r['scenario_dealer_monthly_payment']):,.0f}",
-            "term": int(r["loan_term"]),
-            "cc": f"{float(r['customer_cash']):,.0f}",
-            "dc": f"{float(r['dealer_cash']):,.0f}",
-            "lc": f"{float(r['loyalty_cash']):,.0f}",
-            "cq": f"{float(r['conquest_cash']):,.0f}",
-            "cost": f"{float(r['estimated_support_cost']):,.0f}",
-            "conv": f"{float(r['conversion_probability']):.4f}",
-            "lift": _fmt_pct(float(r["conversion_lift_vs_baseline"])),
-            "marg": f"{float(r['remaining_margin_estimate']):,.0f}",
-            "ev": f"{float(r['expected_value']):,.0f}",
-        })
+    for disp_i, (kind, _iloc, r) in enumerate(curated, start=1):
+        rows_out.append(
+            {
+                "rowKey": f"{kind}-{_iloc}",
+                "rank": disp_i,
+                "isRecommended": bool(kind == "recommended"),
+                "isAggressive": bool(kind == "aggressive"),
+                "isCurrent": bool(kind == "current"),
+                "rec": tag_for_kind.get(kind, ""),
+                "apr": f"{float(r['scenario_dealer_apr']):.3f}",
+                "pmt": f"{float(r['scenario_dealer_monthly_payment']):,.0f}",
+                "term": int(r["loan_term"]),
+                "cc": f"{float(r['customer_cash']):,.0f}",
+                "dc": f"{float(r['dealer_cash']):,.0f}",
+                "lc": f"{float(r['loyalty_cash']):,.0f}",
+                "cq": f"{float(r['conquest_cash']):,.0f}",
+                "cost": f"{float(r['estimated_support_cost']):,.0f}",
+                "conv": f"{float(r['conversion_probability']):.4f}",
+                "lift": _fmt_pct(float(r["conversion_lift_vs_baseline"])),
+                "marg": f"{float(r['remaining_margin_estimate']):,.0f}",
+                "ev": f"{float(r['expected_value']):,.0f}",
+            }
+        )
 
     with ui.row().classes("w-full items-center justify-between gap-4 flex-wrap"):
         ui.label(
-            f"Showing {len(rows_out)} of {total_eval:,} evaluated scenarios · "
-            f"sorted by conversion (highest first)."
-        ).classes("text-xs").style(f"color:{TEXT_SECONDARY};max-width:640px;line-height:1.45;")
+            f"Showing {len(rows_out)} curated rows of {total_eval:,} evaluated scenarios · "
+            "current, recommended, aggressive, then highest conversion. "
+            f"Excel export still includes top {SCENARIOS_TABLE_TOP_N} by conversion."
+        ).classes("text-xs").style(f"color:{TEXT_SECONDARY};max-width:720px;line-height:1.45;")
 
         def export_excel() -> None:
             try:
@@ -730,13 +809,17 @@ def render_top_scenarios_table(df: pd.DataFrame, rec: pd.Series) -> None:
             "outline dense no-caps"
         ).classes("shrink-0").style(f"color:#334155;border-color:{BORDER};")
 
-    tbl = ui.table(columns=cols, rows=rows_out, row_key="rank").props("dense flat bordered").classes(
+    tbl = ui.table(columns=cols, rows=rows_out, row_key="rowKey").props("dense flat bordered").classes(
         "w-full text-sm scenarios-results-table mt-3"
     )
     tbl.add_slot(
         "body",
         r"""
-        <q-tr :props="props" :class="props.row.isRecommended ? 'scenario-row--recommended' : ''">
+        <q-tr :props="props" :class="{
+          'scenario-row--recommended': props.row.isRecommended,
+          'scenario-row--aggressive': props.row.isAggressive,
+          'scenario-row--current': props.row.isCurrent
+        }">
             <q-td v-for="col in props.cols" :key="col.name" :props="props">
                 {{ props.row[col.field] }}
             </q-td>
@@ -961,10 +1044,15 @@ def render_dashboard(
                 "subvention cost tied to dealer rate.",
                 mk_support_horizontal_stacked(labs, vals, embedded=True),
             )
-            ui.label("Top 100 scenarios").classes("dash-section-h2 w-full").style(
+            ui.label("Key scenarios").classes("dash-section-h2 w-full").style(
                 "margin-top:var(--s-2);"
             )
-            render_top_scenarios_table(result_df, rec)
+            render_top_scenarios_table(
+                result_df,
+                rec,
+                aggressive,
+                baseline_match=baseline_hover_row,
+            )
             render_model_details_debug(
                 pipeline=pipeline,
                 schema=schema,

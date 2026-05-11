@@ -521,21 +521,37 @@ body {{
   display: grid;
   grid-template-columns: 280px minmax(0, 1fr);
   gap: 24px;
-  align-items: start;
+  align-items: stretch;
+  /* Independent scroll: rail vs main (desktop); header ~app header + shell padding */
+  height: calc(100dvh - 96px);
+  min-height: 320px;
+  overflow: hidden;
 }}
 
 @media (max-width: 960px) {{
   .dashboard-shell {{
     grid-template-columns: 1fr;
     padding: var(--s-4);
+    height: auto;
+    min-height: unset;
+    overflow: visible;
+  }}
+  .sidebar-panel,
+  .results-main {{
+    max-height: none;
+    overflow-y: visible;
   }}
 }}
 
 .sidebar-panel {{
-  position: sticky;
-  top: 20px;
-  align-self: start;
+  position: relative;
+  top: auto;
+  align-self: stretch;
   min-width: 0;
+  min-height: 0;
+  max-height: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
   width: 100%;
   max-width: 100%;
   box-sizing: border-box;
@@ -550,6 +566,10 @@ body {{
 
 .results-main {{
   min-width: 0;
+  min-height: 0;
+  max-height: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
   width: 100%;
   gap: var(--s-5) !important;
   align-items: stretch !important;
@@ -969,5 +989,23 @@ body {{
 }}
 .scenarios-results-table .scenario-row--recommended td:first-child {{
   box-shadow: inset 3px 0 0 0 #22c55e;
+}}
+
+.scenarios-results-table .scenario-row--aggressive td {{
+  background-color: rgba(254, 243, 199, 0.85) !important;
+  color: #92400e !important;
+  font-weight: 600;
+}}
+.scenarios-results-table .scenario-row--aggressive td:first-child {{
+  box-shadow: inset 3px 0 0 0 #f59e0b;
+}}
+
+.scenarios-results-table .scenario-row--current td {{
+  background-color: rgba(241, 245, 249, 0.95) !important;
+  color: #334155 !important;
+  font-weight: 600;
+}}
+.scenarios-results-table .scenario-row--current td:first-child {{
+  box-shadow: inset 3px 0 0 0 #64748b;
 }}
 """
