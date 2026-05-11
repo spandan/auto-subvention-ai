@@ -690,18 +690,11 @@ def render_offer_comparison(
         ("Expected economic score", econ(cur_row), econ(rec), econ(agg)),
     )
 
-    with ui.element("div").classes("dash-panel w-full").style("overflow-x:auto;"):
+    with ui.element("div").classes("dash-panel w-full offer-comparison-panel"):
         ui.label("Current vs Recommended vs Aggressive").classes("dash-section-h2").style(
             "margin-bottom:16px;text-transform:none;"
         )
-        with ui.element("div").style(
-            "display:grid;"
-            "grid-template-columns: 1fr 1fr 1fr 1fr;"
-            "gap:0;"
-            "border:1px solid #e5e7eb;"
-            "border-radius:12px;"
-            "overflow:hidden;"
-        ):
+        with ui.element("div").classes("offer-comparison-grid-inner"):
             _tri_cell("Metric", header=True)
             _tri_cell("Current offer", header=True)
             _tri_cell("Recommended", header=True)

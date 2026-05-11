@@ -944,6 +944,29 @@ body {{
   box-shadow: none;
 }}
 
+/* Current / Recommended / Aggressive table: do not shrink inside flex column (avoids tiny scroll box) */
+.offer-comparison-panel {{
+  flex-shrink: 0;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  overflow-x: auto;
+  overflow-y: visible;
+  max-height: none;
+  min-height: min-content;
+}}
+.offer-comparison-grid-inner {{
+  display: grid;
+  grid-template-columns: minmax(140px, 1.1fr) repeat(3, minmax(0, 1fr));
+  grid-auto-rows: minmax(44px, auto);
+  gap: 0;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  overflow: hidden;
+  width: 100%;
+  min-width: min(100%, 720px);
+}}
+
 .chart-card {{
   background: #ffffff;
   border: 1px solid var(--border);

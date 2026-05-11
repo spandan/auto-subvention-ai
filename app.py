@@ -288,14 +288,6 @@ def run_analysis() -> None:
     """Schedule optimization — must run from a NiceGUI click handler so `client` exists."""
     client = ui.context.client
     MODEL.last_error = None
-    errs, warns = _run_input_validation()
-    if errs:
-        MODEL.last_error = "; ".join(errs)
-        ui.notify(MODEL.last_error, type="negative", close_button="Dismiss")
-        main_body.refresh()
-        return
-    for w in warns:
-        ui.notify(w, type="warning")
 
     # Avoid stacked Quasar modals: edit drawer backdrop can block the loading overlay and
     # trigger aria-hidden/focus warnings until another click clears focus.
@@ -306,9 +298,10 @@ def run_analysis() -> None:
         pass
     _tear_down_edit_drawer()
 
-    # Open loading in the click handler so the browser gets the dialog update immediately.
-    # Previously the overlay opened only inside a background task after await run_javascript
-    # (up to 2s round-trip), which felt like "nothing happens until I click again".
+    # Open loading before validation/work: gathering inputs via `build_business_inputs` is
+    # cheap (O(1) dict assembly), not seconds of work. Perceived lag is usually the event loop
+    # not flushing WS updates until the click handler returns and/or the background task yields
+    # — not a race on MODEL.state. Invalid runs close the overlay on the next tick.
     LOADING_OVERLAY.build()
     LOADING_OVERLAY.open()
     create_background_task(_run_analysis_async(client), name="run_analysis")
@@ -317,15 +310,20 @@ def run_analysis() -> None:
 async def _run_analysis_async(client: Client) -> None:
     """All `ui.*` / refreshable updates run under `client` (background tasks have empty slot stack)."""
     with client:
-        errs, _warns = _run_input_validation()
+        # Yield first so the browser can paint the overlay opened from the click handler before
+        # any synchronous validation or thread-pool work competes for the same loop turn.
+        await asyncio.sleep(0)
+
+        errs, warns = _run_input_validation()
         if errs:
             LOADING_OVERLAY.close()
             MODEL.last_error = "; ".join(errs)
             ui.notify(MODEL.last_error, type="negative", close_button="Dismiss")
             main_body.refresh()
             return
+        for w in warns:
+            ui.notify(w, type="warning")
 
-        await asyncio.sleep(0)
         try:
             await client.run_javascript(
                 "try{document.activeElement && document.activeElement.blur && document.activeElement.blur();}catch(e){}",
