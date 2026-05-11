@@ -4,22 +4,39 @@ from __future__ import annotations
 
 import copy
 import itertools
+import logging
 import math
 import time
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 import pandas as pd
 
 from services.constants import MAX_FULL_ENUMERATION
 from services.feature_engineering import (
+    align_rows_for_batch_predict,
     align_to_schema,
     calculate_model_features,
     calculate_monthly_payment_if_needed,
     loan_terms_sorted,
     yes_no_to_bool,
 )
-from services.model_service import predict_conversion
+from services.model_service import predict_conversion, predict_conversion_positive_column
+
+_log = logging.getLogger(__name__)
+
+
+def _emit_worker_progress(
+    progress_sink: Callable[[float, str], None] | None,
+    progress: float,
+    message: str,
+) -> None:
+    if progress_sink is None:
+        return
+    try:
+        progress_sink(float(progress), str(message))
+    except Exception:
+        pass
 
 
 def rate_support_tier_label(level: int) -> str:
@@ -310,7 +327,9 @@ def _score_offer_combination_list(
     cost_multiplier: float,
     *,
     idx_offset: int = 0,
+    progress_sink: Callable[[float, str], None] | None = None,
 ) -> tuple[list[dict[str, Any]] | None, str | None]:
+    t_all = time.perf_counter()
     term_baseline_cache: dict[int, float] = {}
 
     def get_p_no_incentive_package(term: int) -> float:
@@ -356,10 +375,18 @@ def _score_offer_combination_list(
                 p_zero_rate_cache[key] = float(p0)
         return float(p_zero_rate_cache[key])
 
-    rows: list[dict[str, Any]] = []
     margin = float(base_inputs["expected_unit_margin"])
     cm = float(cost_multiplier)
 
+    t_build = time.perf_counter()
+    scenarios: list[dict[str, Any]] = []
+    row_models: list[dict[str, Any]] = []
+    metas: list[tuple[Any, ...]] = []
+    _emit_worker_progress(
+        progress_sink,
+        0.62,
+        "Scoring scenarios with the conversion model…",
+    )
     for i, (sup, cc, dc, lc, cq, term) in enumerate(combos):
         scen = apply_offer_scenario_levers(
             base_inputs,
@@ -370,16 +397,36 @@ def _score_offer_combination_list(
             conquest_cash=float(cq),
             loan_term=int(term),
         )
-        rm, p, err = _predict_scenario_row(scen, pipeline, schema, sample_defaults)
-        if err or rm is None or p is None:
-            return None, err or "Prediction failed in multi-lever sweep."
+        rm = calculate_model_features(scen)
+        scenarios.append(scen)
+        row_models.append(rm)
+        metas.append((idx_offset + i, sup, cc, dc, lc, cq, term))
+    t_pack = time.perf_counter()
 
+    X, err_m = align_rows_for_batch_predict(row_models, schema, sample_defaults)
+    t_align = time.perf_counter()
+    if err_m or X is None:
+        return None, err_m or "Alignment failed in multi-lever sweep."
+    try:
+        prob_col = predict_conversion_positive_column(pipeline, X)
+    except Exception as e:
+        return None, str(e)
+    t_pred = time.perf_counter()
+    _emit_worker_progress(progress_sink, 0.76, "Applying feasibility metrics and lifts…")
+    probs = np.asarray(prob_col, dtype=np.float64).reshape(-1)
+    if probs.shape[0] != len(scenarios):
+        return None, "Prediction length mismatch in multi-lever sweep."
+
+    rows: list[dict[str, Any]] = []
+    for scen, rm, p, meta in zip(scenarios, row_models, probs, metas):
+        idx_i, sup, cc, dc, lc, cq, term = meta
+        p_f = float(p)
         p_pkg0 = get_p_no_incentive_package(int(term))
         p_rate0 = get_p_zero_rate_same_cash(
             float(cc), float(dc), float(lc), float(cq), int(term)
         )
-        lift_vs_baseline = float(p) - float(p_pkg0)
-        lift_marginal_rate = float(p) - float(p_rate0)
+        lift_vs_baseline = p_f - float(p_pkg0)
+        lift_marginal_rate = p_f - float(p_rate0)
         la = float(scen["loan_amount"])
         esc = (
             la * (float(sup) / 10000.0) * cm
@@ -388,13 +435,13 @@ def _score_offer_combination_list(
             + float(lc)
             + float(cq)
         )
-        ev = float(p) * margin - esc
+        ev = p_f * margin - esc
         eff = lift_vs_baseline / max(esc, 1.0)
         rem_margin = margin - esc
 
         rows.append(
             {
-                "scenario_idx": idx_offset + i,
+                "scenario_idx": int(idx_i),
                 "dealer_rate_support_level": int(sup),
                 "rate_support_tier": rate_support_tier_label(int(sup)),
                 "scenario_dealer_apr": float(rm["dealer_apr"]),
@@ -407,7 +454,7 @@ def _score_offer_combination_list(
                 "loyalty_cash": float(lc),
                 "conquest_cash": float(cq),
                 "total_cash_rebate": float(rm["total_cash_rebate"]),
-                "conversion_probability": float(p),
+                "conversion_probability": p_f,
                 "conversion_lift_vs_baseline": lift_vs_baseline,
                 "conversion_lift_vs_no_support": lift_vs_baseline,
                 "conversion_lift_vs_zero_apr_same_cash": lift_marginal_rate,
@@ -418,7 +465,17 @@ def _score_offer_combination_list(
                 "remaining_margin_estimate": rem_margin,
             }
         )
-
+    t_done = time.perf_counter()
+    _log.info(
+        "[OPT_WORKER] score_list n=%d feature_engineering=%.3fs align_model_df=%.3fs "
+        "predict_proba=%.3fs support_cost_and_lifts_assemble=%.3fs total=%.3fs",
+        len(combos),
+        t_pack - t_build,
+        t_align - t_pack,
+        t_pred - t_align,
+        t_done - t_pred,
+        t_done - t_all,
+    )
     return rows, None
 
 
@@ -482,15 +539,27 @@ def run_constraint_based_offer_scenarios(
     cost_multiplier: float,
     ui_state: dict[str, Any],
     demo_defaults: dict[str, Any],
+    *,
+    progress_sink: Callable[[float, str], None] | None = None,
 ) -> tuple[pd.DataFrame | None, str | None, dict[str, Any] | None]:
     t0 = time.perf_counter()
+    t_grids = time.perf_counter()
     fine_grids = _fine_optimization_grids(
         optimization_constraints, ui_state, demo_defaults
     )
     fine_combos = list(itertools.product(*fine_grids))
     n_fine = len(fine_combos)
+    t_after_grid = time.perf_counter()
+    _log.info(
+        "[OPT_WORKER] generate_scenarios rows=%d wall=%.3fs",
+        n_fine,
+        t_after_grid - t_grids,
+    )
+    _emit_worker_progress(progress_sink, 0.20, "Generating scenarios…")
 
     if n_fine <= MAX_FULL_ENUMERATION:
+        _emit_worker_progress(progress_sink, 0.38, "Preparing model input…")
+        t_score0 = time.perf_counter()
         rows, err = _score_offer_combination_list(
             base_inputs,
             fine_combos,
@@ -499,11 +568,21 @@ def run_constraint_based_offer_scenarios(
             sample_defaults,
             cost_multiplier,
             idx_offset=0,
+            progress_sink=progress_sink,
         )
+        t_score1 = time.perf_counter()
         if err or rows is None:
             return None, err or "Prediction failed in multi-lever sweep.", None
+        t_df0 = time.perf_counter()
         df = pd.DataFrame(rows)
+        t_df1 = time.perf_counter()
         elapsed = time.perf_counter() - t0
+        _log.info(
+            "[OPT_WORKER] full_grid score+assemble wall=%.3fs build_dataframe wall=%.3fs total=%.3fs",
+            t_score1 - t_score0,
+            t_df1 - t_df0,
+            elapsed,
+        )
         meta: dict[str, Any] = {
             "search_mode": "Full grid search",
             "total_grid_scenarios": n_fine,
@@ -522,7 +601,9 @@ def run_constraint_based_offer_scenarios(
         stride = math.ceil(len(coarse_combos) / MAX_FULL_ENUMERATION)
         coarse_combos = coarse_combos[::stride]
         coarse_truncated = True
-
+    _emit_worker_progress(progress_sink, 0.20, "Generating scenarios (coarse grid)…")
+    _emit_worker_progress(progress_sink, 0.38, "Preparing model input…")
+    t_coarse0 = time.perf_counter()
     rows_c, err = _score_offer_combination_list(
         base_inputs,
         list(coarse_combos),
@@ -531,7 +612,9 @@ def run_constraint_based_offer_scenarios(
         sample_defaults,
         cost_multiplier,
         idx_offset=0,
+        progress_sink=progress_sink,
     )
+    t_coarse1 = time.perf_counter()
     if err or rows_c is None:
         return None, err or "Prediction failed in coarse optimization.", None
 
@@ -549,7 +632,9 @@ def run_constraint_based_offer_scenarios(
 
     refined_combos = sorted(refined_set)
     rows_r: list[dict[str, Any]] = []
+    t_ref0 = time.perf_counter()
     if refined_combos:
+        _emit_worker_progress(progress_sink, 0.42, "Refining neighborhood scenarios…")
         rows_r, err_r = _score_offer_combination_list(
             base_inputs,
             refined_combos,
@@ -558,16 +643,30 @@ def run_constraint_based_offer_scenarios(
             sample_defaults,
             cost_multiplier,
             idx_offset=len(rows_c),
+            progress_sink=progress_sink,
         )
         if err_r or rows_r is None:
             return None, err_r or "Prediction failed in refined optimization.", None
+    t_ref1 = time.perf_counter()
 
     all_rows = rows_c + rows_r
     for i, row in enumerate(all_rows):
         row["scenario_idx"] = i
 
+    t_df_all0 = time.perf_counter()
     df = pd.DataFrame(all_rows)
+    t_df_all1 = time.perf_counter()
     elapsed = time.perf_counter() - t0
+    _log.info(
+        "[OPT_WORKER] coarse_to_fine coarse_score=%.3fs refine_score=%.3fs build_dataframe=%.3fs "
+        "coarse_n=%d refine_n=%d total=%.3fs",
+        t_coarse1 - t_coarse0,
+        t_ref1 - t_ref0,
+        t_df_all1 - t_df_all0,
+        len(rows_c),
+        len(rows_r),
+        elapsed,
+    )
     meta = {
         "search_mode": "Coarse-to-fine search",
         "total_grid_scenarios": n_fine,

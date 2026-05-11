@@ -81,6 +81,21 @@ def predict_conversion(pipeline: Any, model_df: pd.DataFrame) -> float:
     return float(proba[0, 1])
 
 
+def predict_conversion_positive_column(pipeline: Any, model_df: pd.DataFrame) -> Any:
+    """Positive-class probabilities for every row (1-D array-like), one ``predict_proba`` call."""
+    if not hasattr(pipeline, "predict_proba"):
+        raise AttributeError(
+            "The loaded pipeline does not support predict_proba(). "
+            "Use a classifier with probability estimates."
+        )
+    proba = pipeline.predict_proba(model_df)
+    if proba.ndim != 2 or proba.shape[1] < 2:
+        raise ValueError(
+            f"Unexpected predict_proba output shape: {getattr(proba, 'shape', None)}"
+        )
+    return proba[:, 1]
+
+
 def assert_artifacts_present() -> None:
     for name in ("model_pipeline.pkl", "feature_schema.json"):
         if not (ROOT / name).is_file():

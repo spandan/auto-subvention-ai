@@ -89,6 +89,7 @@ def render_wizard(
     state: dict[str, Any],
     redraw: Callable[[], None],
     run_analysis: Callable[..., Any],
+    optimization_running: bool = False,
 ) -> None:
     step = int(state.get("wizard_step") or 0)
     step = max(0, min(step, len(_STEPS) - 1))
@@ -138,9 +139,15 @@ def render_wizard(
                     "background:#334155;color:white;"
                 )
             else:
-                ui.button("Run Optimization", on_click=run_analysis).props(
-                    "unelevated dense no-caps"
-                ).style("background:#166534;color:white;")
+                with ui.row().classes("items-center gap-2 flex-wrap"):
+                    run_btn = ui.button("Run Optimization", on_click=run_analysis).props(
+                        "unelevated dense no-caps"
+                    ).style("background:#166534;color:white;")
+                    run_btn.set_enabled(not optimization_running)
+                    if optimization_running:
+                        ui.label("Optimization running…").classes("text-xs").style(
+                            "color:#64748b;"
+                        )
 
 
 def _step_customer(state: dict[str, Any], redraw: Callable[[], None]) -> None:

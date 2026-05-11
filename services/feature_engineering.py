@@ -182,6 +182,8 @@ def session_defaults_from_demo(now: datetime | None = None) -> dict[str, Any]:
         "sb_allowed_loan_terms": list(d["allowed_loan_terms"]),
         "sb_rate_support_step": int(d["rate_support_step"]),
         "sb_cash_support_step": int(d["cash_support_step"]),
+        # Dashboard: full scenario grid table is heavy; default shows top curated rows only.
+        "dashboard_show_all_scenarios": False,
     }
 
 
@@ -451,6 +453,46 @@ def align_to_schema(
     df = pd.DataFrame([out])
     df = df[required_columns]
     return df, None, [], extra_keys
+
+
+def align_rows_for_batch_predict(
+    row_dicts: list[dict[str, Any]],
+    schema: dict[str, Any],
+    sample_defaults: dict[str, Any],
+) -> tuple[pd.DataFrame | None, str | None]:
+    """
+    Stack per-row feature dicts (same keys as ``calculate_model_features``) into one
+    ``DataFrame`` for a single ``predict_proba`` call. Uses the same column rules as
+    ``align_to_schema`` for each row.
+    """
+    if not row_dicts:
+        return pd.DataFrame(), None
+    required_columns = list(schema["required_columns"])
+    records: list[dict[str, Any]] = []
+    for i, row_dict in enumerate(row_dicts):
+        out: dict[str, Any] = {}
+        still_missing: list[str] = []
+        for col in required_columns:
+            if col in row_dict and row_dict[col] is not None:
+                v = row_dict[col]
+                if isinstance(v, float) and (v != v or pd.isna(v)):  # NaN
+                    v = None
+                if v is not None:
+                    out[col] = v
+                    continue
+            if col in sample_defaults and sample_defaults[col] is not None:
+                out[col] = sample_defaults[col]
+            else:
+                still_missing.append(col)
+        if still_missing:
+            return (
+                None,
+                "Cannot build model input: missing required columns after merging "
+                f"computed features and sample_input.json (row {i}): {', '.join(still_missing)}",
+            )
+        records.append(out)
+    df = pd.DataFrame(records)[required_columns]
+    return df, None
 
 
 def loan_terms_sorted(raw: Any) -> list[int]:

@@ -10,13 +10,16 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import queue
+import threading
 import time
 import traceback
 import warnings
+from collections.abc import Callable
 from typing import Any
 
 import pandas as pd
-from nicegui import Client, run, ui
+from nicegui import Client, ui
 
 from services.feature_engineering import (
     build_business_inputs,
@@ -60,6 +63,22 @@ def _ensure_app_run_logger() -> None:
 
 _ensure_app_run_logger()
 
+_dup_lock = threading.Lock()
+_running_client_ids: set[str] = set()
+
+
+def _try_begin_optimization(client_id: str) -> bool:
+    with _dup_lock:
+        if client_id in _running_client_ids:
+            return False
+        _running_client_ids.add(client_id)
+        return True
+
+
+def _end_optimization(client_id: str) -> None:
+    with _dup_lock:
+        _running_client_ids.discard(client_id)
+
 
 class AppModel:
     """In-memory UI state + analysis outputs (single worker process)."""
@@ -82,6 +101,7 @@ class AppModel:
         self.meta: dict[str, Any] = {}
         self.relaxed: bool = False
         self.last_error: str | None = None
+        self.optimization_running: bool = False
 
 
 MODEL = AppModel()
@@ -206,6 +226,9 @@ def open_edit_section(section: str) -> None:
 
 def go_to_wizard() -> None:
     """Full session reset: demo defaults, wizard step 1, cleared results and UI chrome."""
+    with _dup_lock:
+        _running_client_ids.clear()
+    MODEL.optimization_running = False
     _tear_down_edit_drawer()
     LOADING_OVERLAY.close()
     fresh = session_defaults_from_demo()
@@ -237,7 +260,10 @@ def _run_input_validation() -> tuple[list[str], list[str]]:
     return validate_business_inputs(business, MODEL.state)
 
 
-def _optimization_worker() -> dict[str, Any]:
+def _optimization_worker(
+    *,
+    progress_sink: Callable[[float, str], None] | None = None,
+) -> dict[str, Any]:
     """
     Heavy work for thread pool (keeps UI event loop responsive).
     Reads latest inputs from MODEL.state.
@@ -253,10 +279,17 @@ def _optimization_worker() -> dict[str, Any]:
         category=FutureWarning,
         module=r"sklearn\.utils\.deprecation",
     )
+    t_ci0 = time.perf_counter()
     business = build_business_inputs(MODEL.state)
     constraints = build_optimization_constraints(MODEL.state)
     cm = float(MODEL.state.get("sb_cost_multiplier") or 0.65)
+    t_ci1 = time.perf_counter()
+    logger.info(
+        "[OPT_WORKER] collect_inputs_start/end wall=%.3fs",
+        t_ci1 - t_ci0,
+    )
 
+    t_ss0 = time.perf_counter()
     df, err, meta = run_constraint_based_offer_scenarios(
         business,
         constraints,
@@ -266,6 +299,14 @@ def _optimization_worker() -> dict[str, Any]:
         cm,
         MODEL.state,
         MODEL.demo_defaults,
+        progress_sink=progress_sink,
+    )
+    t_ss1 = time.perf_counter()
+    logger.info(
+        "[OPT_WORKER] generate_scenarios+score+build_dataframe wall=%.3fs ok=%s rows=%s",
+        t_ss1 - t_ss0,
+        err is None and df is not None,
+        len(df) if df is not None else 0,
     )
     if err or df is None:
         logger.warning(
@@ -275,11 +316,18 @@ def _optimization_worker() -> dict[str, Any]:
         )
         return {"ok": False, "error": err or "Optimization failed."}
 
+    t_rs0 = time.perf_counter()
     rec, feasible, relaxed = select_recommended_constrained(
         df, float(business["expected_unit_margin"]), constraints
     )
     aggressive = select_highest_conversion_scenario(df)
+    t_rs1 = time.perf_counter()
+    logger.info(
+        "[OPT_WORKER] recommendation_selection_start/end wall=%.3fs",
+        t_rs1 - t_rs0,
+    )
 
+    t_bl0 = time.perf_counter()
     term = int(rec["loan_term"])
     scen0 = apply_offer_scenario_levers(
         business,
@@ -299,6 +347,11 @@ def _optimization_worker() -> dict[str, Any]:
         )
     else:
         baseline_p = float(p0)
+    t_bl1 = time.perf_counter()
+    logger.info(
+        "[OPT_WORKER] baseline_probability_lookup wall=%.3fs",
+        t_bl1 - t_bl0,
+    )
 
     logger.info(
         "[OPT] optimization_worker: finished rows=%d feasible=%d relaxed=%s wall=%.3fs",
@@ -326,43 +379,94 @@ async def _overlay_pulse(client: Client, message: str, progress: float) -> None:
     await asyncio.sleep(0.02)
 
 
+async def _await_executor_with_progress(
+    client: Client,
+    progress_q: queue.SimpleQueue[tuple[float, str]],
+    worker_fn: Callable[[], dict[str, Any]],
+) -> dict[str, Any]:
+    """Run sync worker in default executor; drain thread-safe progress updates onto the UI loop."""
+    loop = asyncio.get_running_loop()
+    fut = loop.run_in_executor(None, worker_fn)
+    while True:
+        while True:
+            try:
+                pct, msg = progress_q.get_nowait()
+            except queue.Empty:
+                break
+            else:
+                await _overlay_pulse(client, msg, pct)
+        if fut.done():
+            break
+        await asyncio.sleep(0.03)
+    while True:
+        try:
+            pct, msg = progress_q.get_nowait()
+            await _overlay_pulse(client, msg, pct)
+        except queue.Empty:
+            break
+    return await fut
+
+
 async def run_analysis() -> None:
     """Run optimization from the UI: async so we can await paint yields before heavy work."""
     client = ui.context.client
+    cid = str(getattr(client, "id", "?"))
+    if not _try_begin_optimization(cid):
+        logger.info(
+            "[OPT] duplicate click ignored; optimization already running for client_id=%s",
+            cid,
+        )
+        return
+
+    MODEL.optimization_running = True
     t0 = time.perf_counter()
 
     def _dt() -> float:
         return time.perf_counter() - t0
 
-    MODEL.last_error = None
-    logger.info("[OPT] click client_id=%s", getattr(client, "id", "?"))
-
     try:
-        LOADING_OVERLAY.open()
-        logger.info("[OPT] overlay opened Δt=%.3fs", _dt())
+        with client:
+            main_body.refresh()
 
-        await asyncio.sleep(0)
-        await asyncio.sleep(0.1)
-        logger.info("[OPT] post paint-yield Δt=%.3fs", _dt())
+        MODEL.last_error = None
+        logger.info("[OPT] click client_id=%s", cid)
 
         try:
-            if EDIT_DRAWER.dialog is not None and not EDIT_DRAWER.dialog.is_deleted:
-                EDIT_DRAWER.dialog.close()
-        except Exception:
-            pass
-        _tear_down_edit_drawer()
+            LOADING_OVERLAY.open()
+            logger.info("[OPT] overlay opened Δt=%.3fs", _dt())
 
-        await _run_optimization_pipeline(client, t0)
-    except Exception:
-        logger.exception("[OPT] run_analysis failed Δt=%.3fs", _dt())
+            await asyncio.sleep(0)
+            await asyncio.sleep(0.1)
+            logger.info("[OPT] post paint-yield Δt=%.3fs", _dt())
+
+            try:
+                if EDIT_DRAWER.dialog is not None and not EDIT_DRAWER.dialog.is_deleted:
+                    EDIT_DRAWER.dialog.close()
+            except Exception:
+                pass
+            _tear_down_edit_drawer()
+
+            await _run_optimization_pipeline(client, t0)
+        except Exception:
+            logger.exception("[OPT] run_analysis failed Δt=%.3fs", _dt())
+            try:
+                with client:
+                    LOADING_OVERLAY.close()
+                    MODEL.last_error = (
+                        "Internal error while running optimization (see server logs)."
+                    )
+                    ui.notify(MODEL.last_error, type="negative", multi_line=True)
+                    main_body.refresh()
+            except Exception:
+                logger.exception("[OPT] recovery UI failed")
+    finally:
+        MODEL.optimization_running = False
+        _end_optimization(cid)
         try:
             with client:
-                LOADING_OVERLAY.close()
-                MODEL.last_error = "Internal error while running optimization (see server logs)."
-                ui.notify(MODEL.last_error, type="negative", multi_line=True)
                 main_body.refresh()
         except Exception:
-            logger.exception("[OPT] recovery UI failed")
+            pass
 
 
 async def _run_optimization_pipeline(client: Client, t0: float) -> None:
@@ -383,11 +487,11 @@ async def _run_optimization_pipeline(client: Client, t0: float) -> None:
         for w in warns:
             ui.notify(w, type="warning")
 
-        LOADING_OVERLAY.set_phase("Validated inputs — model pipeline ready.", 0.15)
+        LOADING_OVERLAY.set_phase("Validated inputs — model pipeline ready.", 0.12)
         logger.info("[OPT] validation ok Δt=%.3fs", _dt())
 
-    await _overlay_pulse(client, "Preparing scenario search…", 0.30)
-    await _overlay_pulse(client, "Generating and scoring scenarios…", 0.45)
+    await _overlay_pulse(client, "Generating scenarios…", 0.20)
+    await _overlay_pulse(client, "Preparing model input…", 0.40)
 
     try:
         await client.run_javascript(
@@ -399,12 +503,23 @@ async def _run_optimization_pipeline(client: Client, t0: float) -> None:
 
     with client:
         LOADING_OVERLAY.set_phase("Scoring scenarios with the conversion model…", 0.55)
-    logger.info("[OPT] io_bound dispatch Δt=%.3fs", _dt())
+    logger.info("[OPT] executor dispatch Δt=%.3fs", _dt())
     _tw0 = time.perf_counter()
+    progress_q: queue.SimpleQueue[tuple[float, str]] = queue.SimpleQueue()
+
+    def sink(p: float, m: str) -> None:
+        try:
+            progress_q.put((float(p), str(m)))
+        except Exception:
+            pass
+
+    def worker_fn() -> dict[str, Any]:
+        return _optimization_worker(progress_sink=sink)
+
     try:
-        out = await run.io_bound(_optimization_worker)
+        out = await _await_executor_with_progress(client, progress_q, worker_fn)
     except Exception as e:
-        logger.exception("[OPT] io_bound raised Δt=%.3fs", _dt())
+        logger.exception("[OPT] executor raised Δt=%.3fs", _dt())
         with client:
             LOADING_OVERLAY.close()
             MODEL.last_error = f"{type(e).__name__}: {e}"
@@ -412,7 +527,7 @@ async def _run_optimization_pipeline(client: Client, t0: float) -> None:
             main_body.refresh()
         return
     logger.info(
-        "[OPT] io_bound done wall=%.3fs Δt=%.3fs",
+        "[OPT] executor done wall=%.3fs Δt=%.3fs",
         time.perf_counter() - _tw0,
         _dt(),
     )
@@ -433,7 +548,7 @@ async def _run_optimization_pipeline(client: Client, t0: float) -> None:
             main_body.refresh()
             return
 
-        LOADING_OVERLAY.set_phase("Selecting recommendation…", 0.80)
+        LOADING_OVERLAY.set_phase("Selecting recommendation…", 0.85)
         MODEL.result_df = out["df"]
         MODEL.rec_row = out["rec"]
         MODEL.aggressive_row = out["aggressive"]
@@ -443,7 +558,7 @@ async def _run_optimization_pipeline(client: Client, t0: float) -> None:
         MODEL.feasible_n = int(out.get("feasible_n", 0))
         MODEL.state["ui_mode"] = "dashboard"
 
-        LOADING_OVERLAY.set_phase("Preparing dashboard (charts and tables)…", 0.92)
+        LOADING_OVERLAY.set_phase("Preparing dashboard (charts and tables)…", 0.95)
         logger.info("[OPT] main_body.refresh start Δt=%.3fs", _dt())
         _tr0 = time.perf_counter()
         main_body.refresh()
@@ -478,13 +593,21 @@ def main_body() -> None:
             )
 
         if MODEL.state["ui_mode"] == "wizard":
-            render_wizard(state=MODEL.state, redraw=main_body.refresh, run_analysis=run_analysis)
+            render_wizard(
+                state=MODEL.state,
+                redraw=main_body.refresh,
+                run_analysis=run_analysis,
+                optimization_running=MODEL.optimization_running,
+            )
         else:
             if MODEL.result_df is None or MODEL.rec_row is None or MODEL.aggressive_row is None:
                 MODEL.state["ui_mode"] = "wizard"
                 ui.notify("Run analysis from the wizard first.", type="warning")
                 render_wizard(
-                    state=MODEL.state, redraw=main_body.refresh, run_analysis=run_analysis
+                    state=MODEL.state,
+                    redraw=main_body.refresh,
+                    run_analysis=run_analysis,
+                    optimization_running=MODEL.optimization_running,
                 )
                 return
             render_dashboard(
@@ -503,6 +626,7 @@ def main_body() -> None:
                 run_analysis=run_analysis,
                 open_edit=open_edit_section,
                 go_wizard=go_to_wizard,
+                optimization_running=MODEL.optimization_running,
             )
 
 

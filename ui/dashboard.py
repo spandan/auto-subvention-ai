@@ -29,6 +29,8 @@ from ui.wizard import render_section_for_edit
 SCENARIOS_TABLE_TOP_N = 100
 # Dashboard table: current + recommended + aggressive + top conversion fill.
 SCENARIOS_TABLE_UI_MAX = 10
+# Cap when user expands the on-page table (large grids are expensive to render).
+SCENARIOS_TABLE_SHOW_ALL_CAP = 500
 
 
 # --- Formatting ----------------------------------------------------------------------
@@ -449,6 +451,7 @@ def render_left_summary_panel(
     open_edit: Callable[[str], None],
     run_analysis: Callable[[], Any],
     go_wizard: Callable[[], None],
+    optimization_running: bool = False,
 ) -> None:
     """Sticky executive rail — snapshot → quick edits → run."""
     dti_pct = business_dti_ratio(state) * 100.0
@@ -518,12 +521,17 @@ def render_left_summary_panel(
     with ui.element("div").classes("rail-section"):
         ui.label("Run Actions").classes("rail-section-label")
         with ui.element("div").classes("rail-run-stack"):
-            ui.button(
+            rerun = ui.button(
                 "Re-run Optimization",
                 on_click=run_analysis,
             ).props(
                 "unelevated dense no-caps"
             ).classes("btn-dash btn-dash-primary")
+            rerun.set_enabled(not optimization_running)
+            if optimization_running:
+                ui.label("Optimization running…").classes("text-xs").style(
+                    "color:#64748b;margin-top:6px;"
+                )
             ui.button(
                 "Start over",
                 on_click=go_wizard,
@@ -721,14 +729,23 @@ def render_top_scenarios_table(
     aggressive: pd.Series,
     *,
     baseline_match: pd.Series | None,
+    state: dict[str, Any],
+    redraw: Callable[[], None],
 ) -> None:
-    """Curated rows: current (if in grid), recommended, aggressive, then top conversion (cap 10)."""
+    """Curated rows: current (if in grid), recommended, aggressive, then top conversion."""
+    state.setdefault("dashboard_show_all_scenarios", False)
+    show_all = bool(state.get("dashboard_show_all_scenarios"))
+    max_rows = (
+        min(SCENARIOS_TABLE_SHOW_ALL_CAP, len(df))
+        if show_all
+        else SCENARIOS_TABLE_UI_MAX
+    )
     curated = _curated_scenario_rows(
         df,
         rec=rec,
         aggressive=aggressive,
         baseline_match=baseline_match,
-        max_rows=SCENARIOS_TABLE_UI_MAX,
+        max_rows=max_rows,
     )
     total_eval = len(df)
 
@@ -781,11 +798,23 @@ def render_top_scenarios_table(
             }
         )
 
+    def _toggle_show_all() -> None:
+        state["dashboard_show_all_scenarios"] = not bool(
+            state.get("dashboard_show_all_scenarios")
+        )
+        redraw()
+
     with ui.row().classes("w-full items-center justify-between gap-4 flex-wrap"):
+        cap_note = (
+            f" (capped at {SCENARIOS_TABLE_SHOW_ALL_CAP:,} rows for responsiveness)"
+            if show_all and total_eval > SCENARIOS_TABLE_SHOW_ALL_CAP
+            else ""
+        )
         ui.label(
             f"Showing {len(rows_out)} curated rows of {total_eval:,} evaluated scenarios · "
             "current, recommended, aggressive, then highest conversion. "
             f"Excel export still includes top {SCENARIOS_TABLE_TOP_N} by conversion."
+            f"{cap_note}"
         ).classes("text-xs").style(f"color:{TEXT_SECONDARY};max-width:720px;line-height:1.45;")
 
         def export_excel() -> None:
@@ -798,9 +827,17 @@ def render_top_scenarios_table(
             except Exception as e:
                 ui.notify(f"Excel export failed: {e}", type="negative")
 
-        ui.button("Download Excel (top 100)", on_click=export_excel).props(
-            "outline dense no-caps"
-        ).classes("shrink-0").style(f"color:#334155;border-color:{BORDER};")
+        with ui.row().classes("items-center gap-2 shrink-0 flex-wrap"):
+            if total_eval > SCENARIOS_TABLE_UI_MAX:
+                ui.button(
+                    "Show top scenarios only" if show_all else "Show all scenarios",
+                    on_click=_toggle_show_all,
+                ).props("outline dense no-caps").style(
+                    f"color:#334155;border-color:{BORDER};"
+                )
+            ui.button("Download Excel (top 100)", on_click=export_excel).props(
+                "outline dense no-caps"
+            ).classes("shrink-0").style(f"color:#334155;border-color:{BORDER};")
 
     tbl = ui.table(columns=cols, rows=rows_out, row_key="rowKey").props("dense flat bordered").classes(
         "w-full text-sm scenarios-results-table mt-3"
@@ -913,6 +950,7 @@ def render_dashboard(
     run_analysis: Callable[..., Any],
     open_edit: Callable[[str], None],
     go_wizard: Callable[[], None],
+    optimization_running: bool = False,
 ) -> None:
     """Post-submit layout: left summary + executive dashboard A→H."""
     business = build_business_inputs(state)
@@ -988,6 +1026,7 @@ def render_dashboard(
                 open_edit=open_edit,
                 run_analysis=run_analysis,
                 go_wizard=go_wizard,
+                optimization_running=optimization_running,
             )
         with ui.column().classes("results-main dash-canvas w-full"):
             render_dashboard_hero(
@@ -1036,6 +1075,8 @@ def render_dashboard(
                 rec,
                 aggressive,
                 baseline_match=baseline_hover_row,
+                state=state,
+                redraw=redraw,
             )
             render_model_details_debug(
                 pipeline=pipeline,
