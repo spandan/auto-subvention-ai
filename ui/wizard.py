@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any, Callable
 
 from nicegui import ui
-from nicegui.background_tasks import create as create_background_task
 
 from services.constants import (
     BODY_STYLES_UI,
@@ -140,15 +138,7 @@ def render_wizard(
                     "background:#334155;color:white;"
                 )
             else:
-                def _run_opt() -> None:
-                    # NiceGUI: use background_tasks.create so the task is not GC'd mid-flight
-                    # (bare asyncio.create_task can appear to "do nothing" after click).
-                    if asyncio.iscoroutinefunction(run_analysis):
-                        create_background_task(run_analysis(), name="run_analysis")  # type: ignore[misc]
-                    else:
-                        run_analysis()  # type: ignore[misc]
-
-                ui.button("Run Optimization", on_click=_run_opt).props(
+                ui.button("Run Optimization", on_click=lambda: run_analysis()).props(
                     "unelevated dense no-caps"
                 ).style("background:#166534;color:white;")
 

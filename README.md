@@ -73,7 +73,7 @@ Generate a **public domain** under the Railway service (**Settings → Networkin
 ### Run Optimization “does nothing” on Railway
 
 - **Dependencies:** `requirements.txt` lists direct deps; `pip` installs transitive packages (e.g. **uvicorn**, **starlette**, **scipy** with scikit-learn). If a deploy log shows `ModuleNotFoundError`, pin that package explicitly.
-- **Async click handler:** Optimization is started with **`nicegui.background_tasks.create`** (not bare `asyncio.create_task`) so the coroutine is not garbage-collected before it runs — this matches NiceGUI’s recommended pattern for long async work from sync buttons.
+- **Client context:** The optimization coroutine runs in a **background task** with an empty “slot stack”, so **`main_body.refresh()`** and overlays must run inside **`with client:`** — `run_analysis()` captures **`ui.context.client`** from the click handler and **`app.py`** delegates to **`_run_analysis_async(client)`** for this reason.
 - **Production server flags:** When **`RAILWAY_ENVIRONMENT`** is set, **`app.py`** sets **`reload=False`** and **`forwarded_allow_ips='*'`** for uvicorn so WebSockets and client updates behave behind Railway’s proxy.
 - **Validation:** If **no loan term** is selected under optimization constraints, **`validate_business_inputs`** stops before the loading overlay; check for a red toast or the error banner above the wizard.
 - **Logs:** In Railway → **Deployments → View logs**, look for tracebacks during **`run_analysis`** / **`_optimization_worker`** (OOM, pickle errors, etc.).

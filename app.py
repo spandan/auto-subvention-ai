@@ -10,10 +10,12 @@ from __future__ import annotations
 import asyncio
 import os
 import traceback
+import warnings
 from typing import Any
 
 import pandas as pd
-from nicegui import run, ui
+from nicegui import Client, run, ui
+from nicegui.background_tasks import create as create_background_task
 
 from services.feature_engineering import (
     build_business_inputs,
@@ -157,6 +159,12 @@ def _optimization_worker() -> dict[str, Any]:
     Heavy work for thread pool (keeps UI event loop responsive).
     Reads latest inputs from MODEL.state.
     """
+    # sklearn 1.6 emits FutureWarnings on each predict (very noisy under large grids).
+    warnings.filterwarnings(
+        "ignore",
+        category=FutureWarning,
+        module=r"sklearn\.utils\.deprecation",
+    )
     business = build_business_inputs(MODEL.state)
     constraints = build_optimization_constraints(MODEL.state)
     cm = float(MODEL.state.get("sb_cost_multiplier") or 0.65)
@@ -211,55 +219,70 @@ def _optimization_worker() -> dict[str, Any]:
     }
 
 
-async def run_analysis() -> None:
-    MODEL.last_error = None
-    business = build_business_inputs(MODEL.state)
-    errs, warns = validate_business_inputs(business, MODEL.state)
-    if errs:
-        MODEL.last_error = "; ".join(errs)
-        ui.notify(MODEL.last_error, type="negative", close_button="Dismiss")
-        main_body.refresh()
-        return
-    for w in warns:
-        ui.notify(w, type="warning")
+def run_analysis() -> None:
+    """Schedule optimization — must run from a NiceGUI click handler so `client` exists."""
+    client = ui.context.client
+    create_background_task(_run_analysis_async(client), name="run_analysis")
 
-    LOADING_OVERLAY.build()
-    LOADING_OVERLAY.open()
-    try:
-        LOADING_OVERLAY.set_phase(0, 0.06)
-        await asyncio.sleep(0.02)
-        LOADING_OVERLAY.set_phase(1, 0.18)
-        await asyncio.sleep(0.02)
-        LOADING_OVERLAY.set_phase(2, 0.34)
-        out = await run.io_bound(_optimization_worker)
-    except Exception as e:
+
+async def _run_analysis_async(client: Client) -> None:
+    """All `ui.*` / refreshable updates run under `client` (background tasks have empty slot stack)."""
+    with client:
+        MODEL.last_error = None
+        business = build_business_inputs(MODEL.state)
+        errs, warns = validate_business_inputs(business, MODEL.state)
+        if errs:
+            MODEL.last_error = "; ".join(errs)
+            ui.notify(MODEL.last_error, type="negative", close_button="Dismiss")
+            main_body.refresh()
+            return
+        for w in warns:
+            ui.notify(w, type="warning")
+
+        LOADING_OVERLAY.build()
+        LOADING_OVERLAY.open()
+        try:
+            LOADING_OVERLAY.set_phase(0, 0.06)
+            await asyncio.sleep(0.02)
+            LOADING_OVERLAY.set_phase(1, 0.18)
+            await asyncio.sleep(0.02)
+            LOADING_OVERLAY.set_phase(2, 0.34)
+            out = await run.io_bound(_optimization_worker)
+        except Exception as e:
+            LOADING_OVERLAY.close()
+            MODEL.last_error = f"{type(e).__name__}: {e}"
+            ui.notify(MODEL.last_error, type="negative", multi_line=True)
+            main_body.refresh()
+            return
+
+        if out is None or not isinstance(out, dict):
+            LOADING_OVERLAY.close()
+            MODEL.last_error = "Optimization did not return a result (server may be stopping)."
+            ui.notify(MODEL.last_error, type="negative")
+            main_body.refresh()
+            return
+
+        if not out.get("ok"):
+            LOADING_OVERLAY.close()
+            MODEL.last_error = str(out.get("error") or "Optimization failed.")
+            ui.notify(MODEL.last_error, type="negative")
+            main_body.refresh()
+            return
+
+        MODEL.result_df = out["df"]
+        MODEL.rec_row = out["rec"]
+        MODEL.aggressive_row = out["aggressive"]
+        MODEL.baseline_p = float(out["baseline_p"])
+        MODEL.meta = out["meta"]
+        MODEL.relaxed = bool(out["relaxed"])
+        MODEL.feasible_n = int(out.get("feasible_n", 0))
+        MODEL.state["ui_mode"] = "dashboard"
+        LOADING_OVERLAY.set_phase(3, 0.72)
+        await asyncio.sleep(0.03)
+        LOADING_OVERLAY.set_phase(4, 1.0)
+        await asyncio.sleep(0.06)
         LOADING_OVERLAY.close()
-        MODEL.last_error = f"{type(e).__name__}: {e}"
-        ui.notify(MODEL.last_error, type="negative", multi_line=True)
         main_body.refresh()
-        return
-
-    if not out.get("ok"):
-        LOADING_OVERLAY.close()
-        MODEL.last_error = str(out.get("error") or "Optimization failed.")
-        ui.notify(MODEL.last_error, type="negative")
-        main_body.refresh()
-        return
-
-    MODEL.result_df = out["df"]
-    MODEL.rec_row = out["rec"]
-    MODEL.aggressive_row = out["aggressive"]
-    MODEL.baseline_p = float(out["baseline_p"])
-    MODEL.meta = out["meta"]
-    MODEL.relaxed = bool(out["relaxed"])
-    MODEL.feasible_n = int(out.get("feasible_n", 0))
-    MODEL.state["ui_mode"] = "dashboard"
-    LOADING_OVERLAY.set_phase(3, 0.72)
-    await asyncio.sleep(0.03)
-    LOADING_OVERLAY.set_phase(4, 1.0)
-    await asyncio.sleep(0.06)
-    LOADING_OVERLAY.close()
-    main_body.refresh()
 
 
 @ui.refreshable
