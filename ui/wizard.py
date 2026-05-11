@@ -96,14 +96,6 @@ def render_wizard(
     state["wizard_step"] = step
     sec = _STEPS[step]
 
-    with ui.column().classes("w-full items-center"):
-        ui.label("Auto Finance Subvention Optimization Simulator").classes(
-            "ds-page-title text-center w-full"
-        )
-        ui.label("Guided inputs → engineered features → scenario optimization").classes(
-            "ds-page-subtitle text-center w-full"
-        )
-
     with ui.column().classes("ds-card-step"):
         ui.label(f"Step {step + 1} of {len(_STEPS)}").classes("ds-step-meta")
         ui.label(WIZARD_STEP_TITLE.get(sec, sec)).classes("wizard-step-title")
