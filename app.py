@@ -299,14 +299,28 @@ async def _run_analysis_async(client: Client) -> None:
         for w in warns:
             ui.notify(w, type="warning")
 
+        # Avoid stacked Quasar modals: edit drawer backdrop can block the loading overlay and
+        # trigger aria-hidden/focus warnings until another click clears focus.
+        try:
+            if EDIT_DRAWER.dialog is not None and not EDIT_DRAWER.dialog.is_deleted:
+                EDIT_DRAWER.dialog.close()
+        except Exception:
+            pass
+        _tear_down_edit_drawer()
+
+        await asyncio.sleep(0)
+        try:
+            await client.run_javascript(
+                "try{document.activeElement && document.activeElement.blur && document.activeElement.blur();}catch(e){}",
+                timeout=2.0,
+            )
+        except Exception:
+            pass
+        await asyncio.sleep(0.05)
+
         LOADING_OVERLAY.build()
         LOADING_OVERLAY.open()
         try:
-            LOADING_OVERLAY.set_phase(0, 0.06)
-            await asyncio.sleep(0.02)
-            LOADING_OVERLAY.set_phase(1, 0.18)
-            await asyncio.sleep(0.02)
-            LOADING_OVERLAY.set_phase(2, 0.34)
             out = await run.io_bound(_optimization_worker)
         except Exception as e:
             LOADING_OVERLAY.close()
@@ -337,10 +351,6 @@ async def _run_analysis_async(client: Client) -> None:
         MODEL.relaxed = bool(out["relaxed"])
         MODEL.feasible_n = int(out.get("feasible_n", 0))
         MODEL.state["ui_mode"] = "dashboard"
-        LOADING_OVERLAY.set_phase(3, 0.72)
-        await asyncio.sleep(0.03)
-        LOADING_OVERLAY.set_phase(4, 1.0)
-        await asyncio.sleep(0.06)
         LOADING_OVERLAY.close()
         main_body.refresh()
 

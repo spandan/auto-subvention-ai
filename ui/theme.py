@@ -479,11 +479,14 @@ body {{
   line-height: 1.45 !important;
   margin-bottom: 20px !important;
 }}
-.ol-step-text {{
-  font-size: 0.8125rem !important;
-  font-weight: 600 !important;
-  color: #475569 !important;
-  letter-spacing: 0.01em !important;
+.ol-rotating-tip {{
+  font-size: 0.9rem !important;
+  font-weight: 400 !important;
+  color: #64748b !important;
+  line-height: 1.45 !important;
+  margin-bottom: 0 !important;
+  min-height: 2.9em !important;
+  max-width: 28rem !important;
 }}
 
 /* Results (badge only; rail + KPI use dash-* tokens) */

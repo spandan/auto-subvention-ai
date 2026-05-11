@@ -2,17 +2,26 @@
 
 from __future__ import annotations
 
+import random
 from typing import Any, Optional
 
 from nicegui import ui
 
-STEP_LABELS: tuple[str, ...] = (
-    "1. Loading model pipeline",
-    "2. Preparing customer and market features",
-    "3. Generating offer scenarios",
-    "4. Scoring scenarios",
-    "5. Selecting recommended package",
+# Rotating reassurance copy (shown on a timer so long runs feel intentional, not stuck).
+LOADING_ROTATING_TIPS: tuple[str, ...] = (
+    "Mapping your customer, vehicle, and market inputs into the scenario engine.",
+    "Enumerating rate-support and cash levers that respect your caps and budget.",
+    "Scoring each package with the saved conversion model—same math as your last run.",
+    "Walking the efficient frontier: best lift per dollar of support, not just max spend.",
+    "Holding competitor APR, payment, and cashback fixed so comparisons stay apples-to-apples.",
+    "Applying your support-cost multiplier so economics match how your desk funds programs.",
+    "Respecting allowed loan terms and grid steps from your optimization constraints.",
+    "Feasibility filters trim impossible bundles before we rank what’s left.",
+    "Ranking by predicted close rate and incremental efficiency—then picking the recommended row.",
+    "Large grids can take several seconds; the dashboard will appear as soon as scoring finishes.",
 )
+
+TIP_ROTATION_SECONDS = 2.6
 
 
 def _element_has_live_client(el: Any) -> bool:
@@ -35,20 +44,46 @@ def _element_has_live_client(el: Any) -> bool:
 class OptimizationLoadingOverlay:
     """Persistent centered card over blurred backdrop."""
 
-    __slots__ = ("_built", "_dialog", "_progress", "_step_el")
+    __slots__ = ("_built", "_dialog", "_tip_el", "_tip_index", "_tip_timer")
 
     def __init__(self) -> None:
         self._dialog: Optional[ui.dialog] = None
-        self._progress: Optional[ui.linear_progress] = None
-        self._step_el: Optional[ui.label] = None
+        self._tip_el: Optional[ui.label] = None
+        self._tip_index: int = 0
+        self._tip_timer: Any = None
         self._built = False
+
+    def _stop_tip_rotation(self) -> None:
+        t = self._tip_timer
+        self._tip_timer = None
+        if t is None:
+            return
+        try:
+            t.cancel()
+        except AttributeError:
+            try:
+                t.deactivate()
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _advance_tip(self) -> None:
+        if self._tip_el is None or not _element_has_live_client(self._tip_el):
+            self._stop_tip_rotation()
+            return
+        self._tip_index = (self._tip_index + 1) % len(LOADING_ROTATING_TIPS)
+        try:
+            self._tip_el.text = LOADING_ROTATING_TIPS[self._tip_index]
+        except RuntimeError:
+            self._stop_tip_rotation()
 
     def _tear_down(self) -> None:
         """Drop references and delete dialog tree (handles stale session after reload)."""
+        self._stop_tip_rotation()
         dlg = self._dialog
         self._dialog = None
-        self._progress = None
-        self._step_el = None
+        self._tip_el = None
         self._built = False
         if dlg is None:
             return
@@ -62,8 +97,7 @@ class OptimizationLoadingOverlay:
         return bool(
             self._built
             and _element_has_live_client(self._dialog)
-            and _element_has_live_client(self._progress)
-            and _element_has_live_client(self._step_el)
+            and _element_has_live_client(self._tip_el)
         )
 
     def build(self) -> None:
@@ -82,14 +116,10 @@ class OptimizationLoadingOverlay:
             ):
                 with ui.card().classes("optimization-loading-card shadow-lg"):
                     ui.label("Running offer optimization").classes("ol-heading")
-                    ui.label(
-                        "Scoring incentive packages and selecting the most efficient offer."
-                    ).classes("ol-subheading")
-                    self._step_el = ui.label(STEP_LABELS[0]).classes("ol-step-text")
-                    self._progress = ui.linear_progress(
-                        value=0.02, show_value=False, color="#059669"
+                    self._tip_index = random.randrange(len(LOADING_ROTATING_TIPS))
+                    self._tip_el = ui.label(LOADING_ROTATING_TIPS[self._tip_index]).classes(
+                        "ol-rotating-tip"
                     )
-                    self._progress.classes("rounded-full mt-6")
 
         self._built = True
 
@@ -98,36 +128,33 @@ class OptimizationLoadingOverlay:
         if self._dialog is None:
             return
         try:
-            self.reset()
             self._dialog.open()
+            self._stop_tip_rotation()
+            self._tip_index = random.randrange(len(LOADING_ROTATING_TIPS))
+            if self._tip_el is not None and _element_has_live_client(self._tip_el):
+                self._tip_el.text = LOADING_ROTATING_TIPS[self._tip_index]
+            self._tip_timer = ui.timer(TIP_ROTATION_SECONDS, self._advance_tip)
         except RuntimeError:
             self._tear_down()
             self.build()
             if self._dialog is not None:
-                self.reset()
                 self._dialog.open()
+                self._stop_tip_rotation()
+                self._tip_index = random.randrange(len(LOADING_ROTATING_TIPS))
+                if self._tip_el is not None and _element_has_live_client(self._tip_el):
+                    self._tip_el.text = LOADING_ROTATING_TIPS[self._tip_index]
+                self._tip_timer = ui.timer(TIP_ROTATION_SECONDS, self._advance_tip)
 
     def close(self) -> None:
-        if self._dialog is None or not _element_has_live_client(self._dialog):
-            self._tear_down()
+        """Always tear down after close so the next run gets a fresh dialog (avoids stale closed QDialog blocking open())."""
+        dlg = self._dialog
+        if dlg is None:
             return
         try:
-            self._dialog.close()
+            if _element_has_live_client(dlg) and not dlg.is_deleted:
+                dlg.close()
         except RuntimeError:
+            pass
+        finally:
             self._tear_down()
 
-    def reset(self) -> None:
-        self.set_phase(0, 0.02)
-
-    def set_phase(self, index: int, progress: float) -> None:
-        """Index 0..4 for step labels; progress 0..1."""
-        if self._step_el is None or self._progress is None:
-            return
-        if not _element_has_live_client(self._step_el):
-            return
-        try:
-            idx = max(0, min(len(STEP_LABELS) - 1, int(index)))
-            self._step_el.text = STEP_LABELS[idx]
-            self._progress.value = max(0.0, min(1.0, float(progress)))
-        except RuntimeError:
-            self._tear_down()
