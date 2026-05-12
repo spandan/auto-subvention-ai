@@ -13,13 +13,18 @@ from nicegui import ui
 
 from services.feature_engineering import (
     build_business_inputs,
-    business_dti_ratio,
 )
 from services.model_service import get_model_metadata
 from services.optimizer import (
     _predict_scenario_row,
     apply_offer_scenario_levers,
     estimate_support_cost,
+)
+from services.strategy_spectrum import StrategySpectrumPack, build_strategy_spectrum_pack
+from ui.dashboard_exec import (
+    render_executive_results_body,
+    render_executive_sidebar_dealer,
+    render_executive_sidebar_oem,
 )
 from ui.theme import BORDER, TEXT_SECONDARY
 from ui.wizard import render_section_for_edit
@@ -65,6 +70,14 @@ _SCENARIO_REC_KEYS = (
 
 def _row_matches_recommendation(r: pd.Series, rec: pd.Series) -> bool:
     return bool(all(r[k] == rec[k] for k in _SCENARIO_REC_KEYS))
+
+
+def _same_scenario_levers(a: pd.Series, b: pd.Series) -> bool:
+    """True when incentive levers match (same basis as strategy comparison table)."""
+    try:
+        return bool(all(float(a[k]) == float(b[k]) for k in _SCENARIO_REC_KEYS))
+    except (KeyError, TypeError, ValueError):
+        return False
 
 
 def _df_row_index_for_series(df: pd.DataFrame, target: pd.Series) -> int | None:
@@ -351,68 +364,49 @@ def mk_incentive_ladder_fig(
     return fig
 
 
-def mk_support_horizontal_stacked(labels: list[str], values: list[float], *, embedded: bool = False) -> go.Figure:
-    """Dashboard-wide stacked bar; embedded=True removes inline title / tightens for chart-card chrome."""
+def mk_oem_lift_vs_spend_scatter(df: pd.DataFrame, rec: pd.Series) -> go.Figure:
+    """Planning view: conversion lift (pts) vs support spend across evaluated scenarios."""
+    if df.empty:
+        return go.Figure()
+    cap = 4000
+    sample = df if len(df) <= cap else df.sample(n=cap, random_state=42)
+    lift_pts = sample["conversion_lift_vs_baseline"].astype(float) * 100.0
     fig = go.Figure()
-    colors = ["#334155", "#475569", "#64748b", "#0f766e", "#b45309"]
-    j = 0
-    for lab, val in zip(labels, values, strict=False):
-        if val <= 1e-9:
-            continue
-        fig.add_trace(
-            go.Bar(
-                name=lab,
-                x=[float(val)],
-                y=["Support breakdown"],
-                orientation="h",
-                marker=dict(color=colors[j % len(colors)]),
-                hovertemplate=f"<b>{lab}</b>: $%{{x:,.0f}}<extra></extra>",
-            )
+    fig.add_trace(
+        go.Scatter(
+            x=sample["estimated_support_cost"].astype(float),
+            y=lift_pts,
+            mode="markers",
+            marker=dict(size=5, color="#94a3b8", opacity=0.28),
+            name="Evaluated scenarios",
         )
-        j += 1
-    if embedded:
-        # Legend on the right so the x-axis title is not stacked on horizontal legend text.
-        fig.update_layout(
-            barmode="stack",
-            paper_bgcolor="#FFFFFF",
-            plot_bgcolor="#FFFFFF",
-            height=220,
-            margin=dict(l=64, r=138, t=20, b=64),
-            showlegend=True,
-            font=dict(size=11, color="#475569"),
-            xaxis=dict(
-                title=dict(text="Dollars ($)", font=dict(size=12), standoff=10),
-                gridcolor="#f1f5f9",
-                automargin=True,
-            ),
-            yaxis=dict(showgrid=False),
-            legend=dict(
-                orientation="v",
-                xanchor="left",
-                x=1.01,
-                yanchor="middle",
-                y=0.5,
-                font=dict(size=11),
-                bgcolor="rgba(255,255,255,0.96)",
-                bordercolor="#e2e8f0",
-                borderwidth=1,
-            ),
-            title=dict(text=None),
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=[float(rec["estimated_support_cost"])],
+            y=[float(rec["conversion_lift_vs_baseline"]) * 100.0],
+            mode="markers",
+            marker=dict(size=16, color="#166534", line=dict(width=1, color="#14532d")),
+            name="Recommended",
         )
-    else:
-        fig.update_layout(
-            barmode="stack",
-            paper_bgcolor="#FAFBFC",
-            plot_bgcolor="#FFFFFF",
-            height=180,
-            margin=dict(l=140, r=40, t=64, b=48),
-            title=dict(text="<b>Recommended support cost breakdown</b>", font=dict(size=14, color="#0f172a")),
-            font=dict(size=11, color="#475569"),
-            xaxis=dict(title=dict(text="Dollars ($)"), gridcolor="#f1f5f9"),
-            yaxis=dict(showgrid=False),
-            showlegend=True,
-            legend=dict(orientation="v", x=1.01, y=0.5, font=dict(size=10)),
-        )
+    )
+    fig.update_layout(
+        paper_bgcolor="#FAFBFC",
+        plot_bgcolor="#FFFFFF",
+        height=340,
+        margin=dict(l=56, r=24, t=28, b=72),
+        xaxis=dict(title=dict(text="Support spend ($)", font=dict(size=12)), gridcolor="#f1f5f9"),
+        yaxis=dict(title=dict(text="Conversion lift (pts)", font=dict(size=12)), gridcolor="#f1f5f9"),
+        showlegend=True,
+        legend=dict(
+            orientation="h",
+            yanchor="top",
+            y=-0.22,
+            x=0,
+            font=dict(size=10),
+            bgcolor="rgba(255,255,255,0.9)",
+        ),
+    )
     return fig
 
 
@@ -427,19 +421,25 @@ def render_chart_card(title: str, subtitle: str, fig: go.Figure) -> None:
         ui.plotly(payload).classes("w-full chart-plot chart-body")
 
 
-def breakdown_components(rec: pd.Series, cm: float) -> tuple[list[str], list[float]]:
-    la = float(rec["scenario_loan_amount"])
-    sup = float(rec["dealer_rate_support_level"])
-    apr_cost = la * (sup / 10000.0) * cm
-    return (
-        ["APR Support", "OEM / Customer Cash", "Dealer Cash", "Loyalty", "Conquest"],
-        [
-            apr_cost,
-            float(rec["customer_cash"]),
-            float(rec["dealer_cash"]),
-            float(rec["loyalty_cash"]),
-            float(rec["conquest_cash"]),
-        ],
+# --- OEM left rail (delegated to executive rail component) -----------------------------
+
+
+def _render_oem_left_summary_panel(
+    state: dict[str, Any],
+    meta: dict[str, Any],
+    *,
+    open_edit: Callable[[str], None],
+    run_analysis: Callable[[], Any],
+    go_wizard: Callable[[], None],
+    optimization_running: bool,
+) -> None:
+    render_executive_sidebar_oem(
+        state,
+        meta,
+        open_edit=open_edit,
+        run_analysis=run_analysis,
+        go_wizard=go_wizard,
+        optimization_running=optimization_running,
     )
 
 
@@ -452,90 +452,56 @@ def render_left_summary_panel(
     run_analysis: Callable[[], Any],
     go_wizard: Callable[[], None],
     optimization_running: bool = False,
+    optimization_mode: str = "dealer",
 ) -> None:
     """Sticky executive rail — snapshot → quick edits → run."""
-    dti_pct = business_dti_ratio(state) * 100.0
-    fico = int(state.get("sb_fico_score", 0))
-    segment = str(state.get("sb_customer_segment") or "—")
-    make = str(state.get("sb_make") or "")
-    model = str(state.get("sb_model_name") or "")
-    loan_amt = float(state.get("sb_loan_amount") or 0)
-    loan_term = int(state.get("sb_primary_loan_term") or 0)
-    max_sup = int(state.get("sb_max_apr_rate_support") or 0)
-    mk_rate = float(state.get("sb_market_rate_index") or 0.0)
-    search_txt = str(meta.get("search_mode") or "—")
+    if optimization_mode == "oem":
+        _render_oem_left_summary_panel(
+            state,
+            meta,
+            open_edit=open_edit,
+            run_analysis=run_analysis,
+            go_wizard=go_wizard,
+            optimization_running=optimization_running,
+        )
+        return
 
-    # --- Snapshot header ---
-    with ui.element("div").classes("snapshot-pane-heading"):
-        ui.label("Scenario snapshot").classes("snapshot-pane-title")
-        ui.label("Current inputs").classes("snapshot-pane-sub")
+    render_executive_sidebar_dealer(
+        state,
+        meta,
+        open_edit=open_edit,
+        run_analysis=run_analysis,
+        go_wizard=go_wizard,
+        optimization_running=optimization_running,
+    )
 
-    # --- Snapshot cards ---
-    with ui.element("div").classes("rail-section").style("margin-top: 0;"):
-        with ui.element("div").classes("snapshot-card"):
-            ui.label("Customer").classes("snapshot-label")
-            ui.label(f"{fico} FICO").classes("snapshot-primary")
-            ui.label(f"DTI {dti_pct:.1f}%").classes("snapshot-secondary")
-            ui.label(segment).classes("snapshot-secondary")
-        with ui.element("div").classes("snapshot-card"):
-            ui.label("Vehicle").classes("snapshot-label")
-            ui.label((f"{make} {model}".strip()) or "—").classes("snapshot-primary")
-            ui.label(f"{_fmt_money_k(loan_amt)} financed").classes("snapshot-secondary")
-            if loan_term > 0:
-                ui.label(f"{loan_term} mo loan").classes("snapshot-secondary")
-        with ui.element("div").classes("snapshot-card"):
-            ui.label("Market").classes("snapshot-label")
-            ui.label(f"Competitor APR {float(state.get('sb_competitor_apr') or 0):.2f}%").classes(
-                "snapshot-primary"
-            )
-            ui.label(
-                f"Cashback {_fmt_money(float(state.get('sb_competitor_cashback') or 0))}"
-            ).classes("snapshot-secondary")
-            ui.label(f"Market rate {mk_rate:.2f}%").classes("snapshot-secondary")
-        with ui.element("div").classes("snapshot-card"):
-            ui.label("Optimization").classes("snapshot-label")
-            ui.label(
-                f"Budget {_fmt_money(float(state.get('sb_max_total_support_budget') or 0))}"
-            ).classes("snapshot-primary")
-            ui.label(f"Support cap {max_sup} support points").classes("snapshot-secondary")
-            ui.label(search_txt).classes("snapshot-secondary")
 
-    # --- Quick actions (single bordered stack — visually tied to snapshot cards) ---
-    with ui.element("div").classes("rail-section"):
-        ui.label("Adjust inputs").classes("rail-section-label")
-        with ui.element("div").classes("rail-btn-stack"):
-            qa: tuple[tuple[str, str], ...] = (
-                ("customer", "Customer"),
-                ("vehicle", "Vehicle"),
-                ("dealer_inv", "Dealer & inventory"),
-                ("financing", "Optimization"),
-                ("market", "Market"),
-            )
-            for sec, lbl in qa:
-                ui.button(
-                    lbl,
-                    on_click=lambda *_, s=sec: open_edit(s),
-                ).props("flat dense no-caps").classes("rail-edit-btn")
+def _executive_headline(rec: pd.Series, state: dict[str, Any], *, oem: bool) -> str:
+    if oem:
+        return "Recommended Incentive Strategy"
+    lift = float(rec["conversion_lift_vs_baseline"])
+    bud = max(float(state.get("sb_max_total_support_budget") or 0), 1.0)
+    sup_ratio = float(rec["estimated_support_cost"]) / bud
+    if lift >= 0.12 and sup_ratio <= 0.55:
+        return "High-Efficiency Conversion Strategy"
+    if sup_ratio >= 0.78:
+        return "Balanced Growth Package"
+    if lift < 0.055:
+        return "Margin-Protective Incentive Package"
+    return "Recommended Efficient Offer"
 
-    # --- Run ---
-    with ui.element("div").classes("rail-section"):
-        ui.label("Run Actions").classes("rail-section-label")
-        with ui.element("div").classes("rail-run-stack"):
-            rerun = ui.button(
-                "Re-run Optimization",
-                on_click=run_analysis,
-            ).props(
-                "unelevated dense no-caps"
-            ).classes("btn-dash btn-dash-primary")
-            rerun.set_enabled(not optimization_running)
-            if optimization_running:
-                ui.label("Optimization running…").classes("text-xs").style(
-                    "color:#64748b;margin-top:6px;"
-                )
-            ui.button(
-                "Start over",
-                on_click=go_wizard,
-            ).props("outline dense no-caps").classes("btn-dash rail-run-outline")
+
+def _executive_subcopy(
+    state: dict[str, Any],
+    business: dict[str, Any],
+    *,
+    oem: bool,
+) -> str:
+    if oem:
+        return "Campaign structure tuned to regional demand, inventory posture, and macro anchors."
+    dti = float(business.get("dti") or 0) * 100.0
+    inv = int(state.get("sb_inventory_pressure_ui") or 5)
+    return f"Affordability and close-rate focus for ~{dti:.0f}% DTI, inventory pressure {inv}/10, and your caps."
 
 
 def render_optimization_summary_card(
@@ -544,6 +510,7 @@ def render_optimization_summary_card(
     feasible_n: int,
     scenarios_evaluated: int,
     total_grid: int,
+    compact: bool = False,
 ) -> None:
     rt = meta.get("runtime_seconds")
     if rt is not None:
@@ -557,49 +524,63 @@ def render_optimization_summary_card(
     if total_grid > 0:
         ev_val = f"{scenarios_evaluated:,} / {total_grid:,}"
 
-    with ui.element("div").classes("opt-summary-card"):
-        ui.label("Optimization summary").classes("opt-summary-card-title")
+    with ui.element("div").classes(
+        "opt-summary-card opt-summary-card--compact" if compact else "opt-summary-card"
+    ):
+        ui.label("Run summary" if compact else "Optimization summary").classes(
+            "opt-summary-card-title"
+            + (" opt-summary-card-title--compact" if compact else "")
+        )
 
         def row(k: str, v: str) -> None:
-            with ui.element("div").classes("opt-summary-row"):
+            with ui.element("div").classes(
+                "opt-summary-row opt-summary-row--compact" if compact else "opt-summary-row"
+            ):
                 ui.label(k).classes("opt-summary-k")
                 ui.label(v).classes("opt-summary-v")
 
-        row("Search method", str(meta.get("search_mode") or "—"))
-        row("Scenarios evaluated", ev_val)
-        row("Feasible scenarios", f"{feasible_n:,}")
-        row("Optimization time", time_s)
+        if compact:
+            row("Scenarios", f"{feasible_n:,} feasible · {ev_val} evaluated")
+            row("Search", str(meta.get("search_mode") or "—"))
+            row("Runtime", time_s)
+        else:
+            row("Search method", str(meta.get("search_mode") or "—"))
+            row("Scenarios evaluated", ev_val)
+            row("Feasible scenarios", f"{feasible_n:,}")
+            row("Optimization time", time_s)
 
 
 def render_dashboard_hero(
     meta: dict[str, Any],
     *,
+    rec: pd.Series,
+    state: dict[str, Any],
+    business: dict[str, Any],
     feasible_n: int,
     scenarios_evaluated: int,
     total_grid: int,
     relaxed: bool,
+    optimization_mode: str = "dealer",
 ) -> None:
-    """Title + summary card on one row; badge row directly under (KPIs follow)."""
-    with ui.row().classes("w-full items-start dash-hero-row"):
-        with ui.column().classes().style("min-width:0;flex:1 1 360px;"):
-            ui.label("Recommended Efficient Offer").classes("dash-title-main")
-            ui.label(
-                "The optimizer selected the package with the best conversion-to-cost tradeoff "
-                "under your current constraints."
-            ).classes("dash-title-sub")
+    """Executive summary row: headline + compact run summary (KPIs follow)."""
+    oem = optimization_mode == "oem"
+    title = _executive_headline(rec, state, oem=oem)
+    sub = _executive_subcopy(state, business, oem=oem)
+    with ui.row().classes("w-full items-start exec-summary-row"):
+        with ui.column().classes("exec-summary-left"):
+            ui.label(title).classes("exec-summary-headline")
+            ui.label(sub).classes("exec-summary-sub")
+            if relaxed:
+                ui.label("Constraints were relaxed to find a feasible package.").classes(
+                    "exec-summary-warn"
+                )
         render_optimization_summary_card(
             meta,
             feasible_n=feasible_n,
             scenarios_evaluated=scenarios_evaluated,
             total_grid=total_grid,
+            compact=True,
         )
-
-    with ui.row().classes("w-full items-center dash-badge-row"):
-        ui.label("Recommended").classes("rs-badge")
-        if relaxed:
-            ui.label("Constraints relaxed for feasibility").classes("text-xs").style(
-                f"color:{TEXT_SECONDARY};font-weight:600;"
-            )
 
 
 def render_kpi_row(
@@ -608,18 +589,42 @@ def render_kpi_row(
     lift_pts: float,
     support_cost: float,
     rem_margin: float,
-    apr_pct: float,
-    monthly_pay: float,
 ) -> None:
     specs: tuple[tuple[str, str, str, bool], ...] = (
-        ("Predicted conversion", _fmt_pct(conv), "Expected close probability", True),
-        ("Conversion lift", _pts(lift_pts), "vs. baseline incentive package", False),
-        ("Estimated support cost", _fmt_money(support_cost), "Fully loaded incentive spend", False),
-        ("Remaining margin", _fmt_money(rem_margin), "After estimated support", False),
-        ("Recommended APR", f"{apr_pct:.2f}%", "Subvented dealer rate", False),
-        ("Monthly payment", _fmt_money(monthly_pay), "Estimated buyer payment", False),
+        ("Predicted close", _fmt_pct(conv), "Modeled conversion", True),
+        ("Lift vs baseline", _pts(lift_pts), "Incremental probability", False),
+        ("Loaded support", _fmt_money(support_cost), "Incentive spend", False),
+        ("Margin after support", _fmt_money(rem_margin), "Retained economics", False),
     )
-    with ui.element("div").classes("kpi-exec-grid"):
+    with ui.element("div").classes("kpi-exec-grid kpi-exec-grid--four"):
+        for label, val, hint, accent in specs:
+            cell = "kpi-exec-cell kpi-exec-cell--accent" if accent else "kpi-exec-cell"
+            with ui.element("div").classes(cell):
+                ui.label(label).classes("kpi-exec-label")
+                ui.label(val).classes("kpi-exec-value")
+                ui.label(hint).classes("kpi-exec-hint")
+
+
+def render_oem_kpi_row(
+    *,
+    state: dict[str, Any],
+    rec: pd.Series,
+    baseline_p: float,
+) -> None:
+    """Strategic planning KPIs — four compact tiles aligned to OEM planning."""
+    _ = baseline_p
+    lift = float(rec["conversion_lift_vs_baseline"])
+    vol_base = max(1.0, float(state.get("oem_target_sales_volume") or 100))
+    vol_idx = lift * vol_base
+    support_cost = float(rec["estimated_support_cost"])
+    rem_margin = float(rec["remaining_margin_estimate"])
+    specs: tuple[tuple[str, str, str, bool], ...] = (
+        ("Conversion lift", _pts(lift), "vs baseline incentive", True),
+        ("Loaded support", _fmt_money(support_cost), "Program spend", False),
+        ("Margin after support", _fmt_money(rem_margin), "Per-unit retained", False),
+        ("Volume lift index", f"{vol_idx:,.0f}", "Lift × regional volume proxy", False),
+    )
+    with ui.element("div").classes("kpi-exec-grid kpi-exec-grid--four"):
         for label, val, hint, accent in specs:
             cell = "kpi-exec-cell kpi-exec-cell--accent" if accent else "kpi-exec-cell"
             with ui.element("div").classes(cell):
@@ -647,6 +652,7 @@ def render_offer_comparison(
     agg: pd.Series,
     *,
     cur_support: float | None,
+    optimization_mode: str = "dealer",
 ) -> None:
     def val_conv(s: pd.Series | None, k: str) -> str:
         if s is None:
@@ -682,7 +688,14 @@ def render_offer_comparison(
 
     econ = lambda s: f"{float(s['expected_value']):,.0f}" if s is not None else "—"
 
-    rows = (
+    oem = optimization_mode == "oem"
+    h_cur = "Current strategy" if oem else "Current offer"
+    panel_title = (
+        "Strategy comparison — current vs recommended vs aggressive"
+        if oem
+        else "Current vs Recommended vs Aggressive"
+    )
+    base_rows = (
         ("Conversion probability", val_conv(cur_row, "conversion_probability"), val_conv(rec, "conversion_probability"), val_conv(agg, "conversion_probability")),
         ("Rate support level", val_rate_support(cur_row), val_rate_support(rec), val_rate_support(agg)),
         ("Dealer APR", val_apr_pct(cur_row), val_apr_pct(rec), val_apr_pct(agg)),
@@ -695,16 +708,28 @@ def render_offer_comparison(
         ("Cash rebate (total)", val_money(cur_row, "total_cash_rebate"), val_money(rec, "total_cash_rebate"), val_money(agg, "total_cash_rebate")),
         ("Estimated support cost", val_support_cost(cur_row), val_support_cost(rec), val_support_cost(agg)),
         ("Remaining margin", val_money(cur_row, "remaining_margin_estimate"), val_money(rec, "remaining_margin_estimate"), val_money(agg, "remaining_margin_estimate")),
-        ("Expected economic score", econ(cur_row), econ(rec), econ(agg)),
     )
+    if oem:
+        inv_lbl = "Inventory improvement (index)"
+        inv_cur = (
+            "—"
+            if cur_row is None
+            else f"{float(cur_row['conversion_lift_vs_baseline']) * 100 / max(float(cur_row.get('estimated_support_cost', 1) or 1), 1):.2f}"
+        )
+        inv_rec = f"{float(rec['conversion_lift_vs_baseline']) * 100 / max(float(rec['estimated_support_cost']), 1):.2f}"
+        inv_agg = f"{float(agg['conversion_lift_vs_baseline']) * 100 / max(float(agg['estimated_support_cost']), 1):.2f}"
+        last_row = (inv_lbl, inv_cur, inv_rec, inv_agg)
+    else:
+        last_row = ("Expected economic score", econ(cur_row), econ(rec), econ(agg))
+    rows = base_rows + (last_row,)
 
     with ui.element("div").classes("dash-panel w-full offer-comparison-panel"):
-        ui.label("Current vs Recommended vs Aggressive").classes("dash-section-h2").style(
+        ui.label(panel_title).classes("dash-section-h2").style(
             "margin-bottom:16px;text-transform:none;"
         )
         with ui.element("div").classes("offer-comparison-grid-inner"):
             _tri_cell("Metric", header=True)
-            _tri_cell("Current offer", header=True)
+            _tri_cell(h_cur, header=True)
             _tri_cell("Recommended", header=True)
             _tri_cell("Aggressive", header=True)
             for label, a, b, c in rows:
@@ -716,11 +741,19 @@ def render_offer_comparison(
                 _tri_cell(b, highlight=True)
                 _tri_cell(c)
 
-        ui.label(
-            "Recommended improves conversion while preserving margin under your constraints. "
-            "Aggressive is the highest predicted conversion in the evaluated grid—often more spend "
-            "with weaker incremental efficiency than the recommendation."
-        ).classes("ds-helper mt-4").style("color:#475569;line-height:1.5;font-size:13px;")
+        if oem:
+            foot = (
+                "Recommended balances conversion lift and support spend under OEM constraints. "
+                "Aggressive maximizes predicted conversion in the evaluated grid—typically higher "
+                "spend with lower incremental efficiency."
+            )
+        else:
+            foot = (
+                "Recommended improves conversion while preserving margin under your constraints. "
+                "Aggressive is the highest predicted conversion in the evaluated grid—often more spend "
+                "with weaker incremental efficiency than the recommendation."
+            )
+        ui.label(foot).classes("ds-helper mt-4").style("color:#475569;line-height:1.5;font-size:13px;")
 
 
 def render_top_scenarios_table(
@@ -731,6 +764,9 @@ def render_top_scenarios_table(
     baseline_match: pd.Series | None,
     state: dict[str, Any],
     redraw: Callable[[], None],
+    optimization_mode: str = "dealer",
+    spectrum_pack: StrategySpectrumPack | None = None,
+    spectrum_current: pd.Series | None = None,
 ) -> None:
     """Curated rows: current (if in grid), recommended, aggressive, then top conversion."""
     state.setdefault("dashboard_show_all_scenarios", False)
@@ -766,15 +802,35 @@ def render_top_scenarios_table(
         {"name": "ev", "label": "Economic score", "field": "ev"},
     ]
 
-    tag_for_kind = {
-        "current": "● Current offer",
-        "recommended": "● Recommended",
-        "aggressive": "● Aggressive",
-        "top": "",
-    }
+    tag_for_kind = (
+        {
+            "current": "● Current strategy",
+            "recommended": "● Recommended strategy",
+            "aggressive": "● Aggressive strategy",
+            "top": "",
+        }
+        if optimization_mode == "oem"
+        else {
+            "current": "● Current offer",
+            "recommended": "● Recommended",
+            "aggressive": "● Aggressive",
+            "top": "",
+        }
+    )
 
     rows_out: list[dict[str, Any]] = []
     for disp_i, (kind, _iloc, r) in enumerate(curated, start=1):
+        spec_current = False
+        spec_conservative = False
+        spec_balanced = False
+        spec_specialty = False
+        if spectrum_pack is not None:
+            if spectrum_current is not None:
+                spec_current = _same_scenario_levers(r, spectrum_current)
+            spec_conservative = _same_scenario_levers(r, spectrum_pack.conservative)
+            spec_balanced = _same_scenario_levers(r, spectrum_pack.balanced)
+            if spectrum_pack.optional is not None:
+                spec_specialty = _same_scenario_levers(r, spectrum_pack.optional)
         rows_out.append(
             {
                 "rowKey": f"{kind}-{_iloc}",
@@ -782,6 +838,10 @@ def render_top_scenarios_table(
                 "isRecommended": bool(kind == "recommended"),
                 "isAggressive": bool(kind == "aggressive"),
                 "isCurrent": bool(kind == "current"),
+                "specCurrent": spec_current,
+                "specConservative": spec_conservative,
+                "specBalanced": spec_balanced,
+                "specSpecialty": spec_specialty,
                 "rec": tag_for_kind.get(kind, ""),
                 "apr": f"{float(r['scenario_dealer_apr']):.3f}",
                 "pmt": f"{float(r['scenario_dealer_monthly_payment']):,.0f}",
@@ -810,11 +870,16 @@ def render_top_scenarios_table(
             if show_all and total_eval > SCENARIOS_TABLE_SHOW_ALL_CAP
             else ""
         )
+        hint = (
+            " Tinted rows match the strategy comparison table when that package appears in this list."
+            if spectrum_pack is not None
+            else ""
+        )
         ui.label(
             f"Showing {len(rows_out)} curated rows of {total_eval:,} evaluated scenarios · "
             "current, recommended, aggressive, then highest conversion. "
             f"Excel export still includes top {SCENARIOS_TABLE_TOP_N} by conversion."
-            f"{cap_note}"
+            f"{cap_note}{hint}"
         ).classes("text-xs").style(f"color:{TEXT_SECONDARY};max-width:720px;line-height:1.45;")
 
         def export_excel() -> None:
@@ -848,7 +913,11 @@ def render_top_scenarios_table(
         <q-tr :props="props" :class="{
           'scenario-row--recommended': props.row.isRecommended,
           'scenario-row--aggressive': props.row.isAggressive,
-          'scenario-row--current': props.row.isCurrent
+          'scenario-row--current': props.row.isCurrent,
+          'scenario-row--spec-current': props.row.specCurrent,
+          'scenario-row--spec-conservative': props.row.specConservative,
+          'scenario-row--spec-balanced': props.row.specBalanced,
+          'scenario-row--spec-specialty': props.row.specSpecialty
         }">
             <q-td v-for="col in props.cols" :key="col.name" :props="props">
                 {{ props.row[col.field] }}
@@ -951,8 +1020,10 @@ def render_dashboard(
     open_edit: Callable[[str], None],
     go_wizard: Callable[[], None],
     optimization_running: bool = False,
+    optimization_mode: str = "dealer",
 ) -> None:
     """Post-submit layout: left summary + executive dashboard A→H."""
+    oem = optimization_mode == "oem"
     business = build_business_inputs(state)
     cm = float(state.get("sb_cost_multiplier") or 0.65)
     term = int(rec["loan_term"])
@@ -1027,62 +1098,85 @@ def render_dashboard(
                 run_analysis=run_analysis,
                 go_wizard=go_wizard,
                 optimization_running=optimization_running,
+                optimization_mode=optimization_mode,
             )
         with ui.column().classes("results-main dash-canvas w-full"):
             render_dashboard_hero(
                 meta,
+                rec=rec,
+                state=state,
+                business=business,
                 feasible_n=feasible_n,
                 scenarios_evaluated=scenarios_evaluated,
                 total_grid=total_grid,
                 relaxed=relaxed,
+                optimization_mode=optimization_mode,
             )
-            render_kpi_row(
-                conv=float(rec["conversion_probability"]),
-                lift_pts=float(rec["conversion_lift_vs_baseline"]),
-                support_cost=float(rec["estimated_support_cost"]),
-                rem_margin=float(rec["remaining_margin_estimate"]),
-                apr_pct=float(rec["scenario_dealer_apr"]),
-                monthly_pay=float(rec["scenario_dealer_monthly_payment"]),
-            )
-            render_offer_comparison(cur_row, rec, aggressive, cur_support=cur_support)
-            ladder = mk_incentive_ladder_fig(
-                result_df,
-                rec,
-                cur_cost=cur_support,
-                cur_p=float(baseline_p),
-                agg=aggressive,
-                cm=cm,
-                baseline_row=baseline_hover_row,
-            )
-            render_chart_card(
-                "Conversion response by support spend",
-                "Shows how conversion probability rises as incentive spend increases "
-                "(efficient-frontier bands use the strongest scenario observed in each cost band).",
-                ladder,
-            )
-            labs, vals = breakdown_components(rec, cm)
-            render_chart_card(
-                "Recommended support cost breakdown",
-                "Estimated dollars by lever for the recommendation — APR support reflects "
-                "subvention cost tied to dealer rate.",
-                mk_support_horizontal_stacked(labs, vals, embedded=True),
-            )
-            ui.label("Key scenarios").classes("dash-section-h2 w-full").style(
-                "margin-top:var(--s-2);"
-            )
-            render_top_scenarios_table(
-                result_df,
-                rec,
-                aggressive,
-                baseline_match=baseline_hover_row,
+            # Dealer and OEM use different KPI semantics; keep branches separate.
+            if oem:
+                render_oem_kpi_row(state=state, rec=rec, baseline_p=float(baseline_p))
+            else:
+                render_kpi_row(
+                    conv=float(rec["conversion_probability"]),
+                    lift_pts=float(rec["conversion_lift_vs_baseline"]),
+                    support_cost=float(rec["estimated_support_cost"]),
+                    rem_margin=float(rec["remaining_margin_estimate"]),
+                )
+
+            def _render_advanced_scenario_exploration() -> None:
+                ladder = mk_incentive_ladder_fig(
+                    result_df,
+                    rec,
+                    cur_cost=cur_support,
+                    cur_p=float(baseline_p),
+                    agg=aggressive,
+                    cm=cm,
+                    baseline_row=baseline_hover_row,
+                )
+                render_chart_card(
+                    "Conversion response by support spend",
+                    "Efficient-frontier view across evaluated scenarios (analyst).",
+                    ladder,
+                )
+                render_chart_card(
+                    "Conversion lift vs. support spend",
+                    "Full scenario cloud — recommended highlighted.",
+                    mk_oem_lift_vs_spend_scatter(result_df, rec),
+                )
+                spectrum_pack = build_strategy_spectrum_pack(result_df, rec, aggressive)
+                ui.label("Key scenarios").classes("dash-section-h2 w-full").style(
+                    "margin-top:var(--s-2);"
+                )
+                render_top_scenarios_table(
+                    result_df,
+                    rec,
+                    aggressive,
+                    baseline_match=baseline_hover_row,
+                    state=state,
+                    redraw=redraw,
+                    optimization_mode=optimization_mode,
+                    spectrum_pack=spectrum_pack,
+                    spectrum_current=cur_row,
+                )
+                render_model_details_debug(
+                    pipeline=pipeline,
+                    schema=schema,
+                    sample_defaults=sample_defaults,
+                    business=business,
+                    result_df=result_df,
+                    rec=rec,
+                )
+
+            render_executive_results_body(
                 state=state,
-                redraw=redraw,
-            )
-            render_model_details_debug(
-                pipeline=pipeline,
-                schema=schema,
-                sample_defaults=sample_defaults,
-                business=business,
                 result_df=result_df,
                 rec=rec,
+                aggressive=aggressive,
+                baseline_p=float(baseline_p),
+                cur_row=cur_row,
+                business=business,
+                cm=cm,
+                optimization_mode=optimization_mode,
+                redraw=redraw,
+                advanced_content=_render_advanced_scenario_exploration,
             )

@@ -21,6 +21,7 @@ from typing import Any
 import pandas as pd
 from nicegui import Client, ui
 
+from services.constants import OEM_EDIT_SECTION_LABELS
 from services.feature_engineering import (
     build_business_inputs,
     get_demo_defaults,
@@ -42,9 +43,11 @@ from services.optimizer import (
     _predict_scenario_row,
 )
 from ui.dashboard import render_dashboard
+from ui.landing import render_landing
 from ui.loading_overlay import OptimizationLoadingOverlay
 from ui.theme import PAGE_MAX_W, PAGE_RESULTS_MAX_W, theme_css
 from ui.wizard import render_section_for_edit, render_wizard
+from ui.wizard_oem import render_oem_section_for_edit, render_oem_wizard
 
 logger = logging.getLogger(__name__)
 
@@ -85,8 +88,6 @@ class AppModel:
 
     def __init__(self) -> None:
         self.state: dict[str, Any] = session_defaults_from_demo()
-        self.state["ui_mode"] = "wizard"
-        self.state["wizard_step"] = 0
         self.state.setdefault("dashboard_edit_section", "customer")
         self.pipeline: Any = None
         self.schema: dict[str, Any] = {}
@@ -168,6 +169,22 @@ EDIT_SECTION_LABELS: dict[str, str] = {
 }
 
 
+def _start_dealer_optimization() -> None:
+    MODEL.state["optimization_mode"] = "dealer"
+    MODEL.state["ui_mode"] = "wizard"
+    MODEL.state["wizard_step"] = 0
+    MODEL.state["dashboard_edit_section"] = "customer"
+    main_body.refresh()
+
+
+def _start_oem_planning() -> None:
+    MODEL.state["optimization_mode"] = "oem"
+    MODEL.state["ui_mode"] = "wizard"
+    MODEL.state["oem_wizard_step"] = 0
+    MODEL.state["dashboard_edit_section"] = "oem_buyer"
+    main_body.refresh()
+
+
 def ensure_edit_dialog() -> None:
     if _edit_drawer_bound_to_current_client():
         return
@@ -208,9 +225,14 @@ def open_edit_section(section: str) -> None:
         assert EDIT_DRAWER.body_col is not None
         assert EDIT_DRAWER.title is not None
         assert EDIT_DRAWER.dialog is not None
-        EDIT_DRAWER.title.text = EDIT_SECTION_LABELS.get(
-            section, section.replace("_", " ").title()
-        )
+        if MODEL.state.get("optimization_mode") == "oem":
+            EDIT_DRAWER.title.text = OEM_EDIT_SECTION_LABELS.get(
+                section, section.replace("_", " ").title()
+            )
+        else:
+            EDIT_DRAWER.title.text = EDIT_SECTION_LABELS.get(
+                section, section.replace("_", " ").title()
+            )
         try:
             EDIT_DRAWER.body_col.clear()
         except RuntimeError as e:
@@ -219,21 +241,22 @@ def open_edit_section(section: str) -> None:
                 continue
             raise
         with EDIT_DRAWER.body_col:
-            render_section_for_edit(MODEL.state, section, lambda: None)
+            if MODEL.state.get("optimization_mode") == "oem":
+                render_oem_section_for_edit(MODEL.state, section, lambda: None)
+            else:
+                render_section_for_edit(MODEL.state, section, lambda: None)
         EDIT_DRAWER.dialog.open()
         return
 
 
 def go_to_wizard() -> None:
-    """Full session reset: demo defaults, wizard step 1, cleared results and UI chrome."""
+    """Full session reset: return to landing, demo defaults, cleared results and UI chrome."""
     with _dup_lock:
         _running_client_ids.clear()
     MODEL.optimization_running = False
     _tear_down_edit_drawer()
     LOADING_OVERLAY.close()
     fresh = session_defaults_from_demo()
-    fresh["ui_mode"] = "wizard"
-    fresh["wizard_step"] = 0
     fresh.setdefault("dashboard_edit_section", "customer")
     MODEL.state = fresh
     MODEL.demo_defaults = get_demo_defaults()
@@ -578,7 +601,8 @@ async def _run_optimization_pipeline(client: Client, t0: float) -> None:
 
 @ui.refreshable
 def main_body() -> None:
-    MODEL.state.setdefault("ui_mode", "wizard")
+    MODEL.state.setdefault("ui_mode", "landing")
+    MODEL.state.setdefault("optimization_mode", "dealer")
     page_max = (
         PAGE_RESULTS_MAX_W
         if MODEL.state.get("ui_mode") == "dashboard"
@@ -587,28 +611,51 @@ def main_body() -> None:
     with ui.column().classes("w-full items-stretch").style(
         f"max-width:{page_max};margin:0 auto;"
     ):
-        if MODEL.last_error and MODEL.state["ui_mode"] == "wizard":
+        ui_mode = MODEL.state.get("ui_mode") or "landing"
+
+        if MODEL.last_error and ui_mode in ("wizard", "landing"):
             ui.label(MODEL.last_error).classes("text-sm").style(
                 "background:#fef2f2;color:#991b1b;padding:12px;border-radius:12px;"
             )
 
-        if MODEL.state["ui_mode"] == "wizard":
-            render_wizard(
-                state=MODEL.state,
-                redraw=main_body.refresh,
-                run_analysis=run_analysis,
-                optimization_running=MODEL.optimization_running,
+        if ui_mode == "landing":
+            render_landing(
+                start_dealer=_start_dealer_optimization,
+                start_oem=_start_oem_planning,
             )
-        else:
-            if MODEL.result_df is None or MODEL.rec_row is None or MODEL.aggressive_row is None:
-                MODEL.state["ui_mode"] = "wizard"
-                ui.notify("Run analysis from the wizard first.", type="warning")
+        elif ui_mode == "wizard":
+            if MODEL.state.get("optimization_mode") == "oem":
+                render_oem_wizard(
+                    state=MODEL.state,
+                    redraw=main_body.refresh,
+                    run_analysis=run_analysis,
+                    optimization_running=MODEL.optimization_running,
+                )
+            else:
                 render_wizard(
                     state=MODEL.state,
                     redraw=main_body.refresh,
                     run_analysis=run_analysis,
                     optimization_running=MODEL.optimization_running,
                 )
+        else:
+            if MODEL.result_df is None or MODEL.rec_row is None or MODEL.aggressive_row is None:
+                MODEL.state["ui_mode"] = "wizard"
+                ui.notify("Run analysis from the wizard first.", type="warning")
+                if MODEL.state.get("optimization_mode") == "oem":
+                    render_oem_wizard(
+                        state=MODEL.state,
+                        redraw=main_body.refresh,
+                        run_analysis=run_analysis,
+                        optimization_running=MODEL.optimization_running,
+                    )
+                else:
+                    render_wizard(
+                        state=MODEL.state,
+                        redraw=main_body.refresh,
+                        run_analysis=run_analysis,
+                        optimization_running=MODEL.optimization_running,
+                    )
                 return
             render_dashboard(
                 state=MODEL.state,
@@ -627,6 +674,7 @@ def main_body() -> None:
                 open_edit=open_edit_section,
                 go_wizard=go_to_wizard,
                 optimization_running=MODEL.optimization_running,
+                optimization_mode=str(MODEL.state.get("optimization_mode") or "dealer"),
             )
 
 
@@ -653,9 +701,9 @@ def index() -> None:
     ):
         with ui.row().classes("w-full items-center justify-start app-header-inner"):
             with ui.column().classes("app-header-brand-col"):
-                ui.label("Subvention Optimizer").classes("header-brand")
+                ui.label("Subvention Optimization Platform").classes("header-brand")
                 ui.label(
-                    "Auto finance subvention · conversion & incentive efficiency"
+                    "Dealer & OEM incentive optimization · conversion intelligence"
                 ).classes("header-subtitle")
 
     with ui.column().classes("app-shell w-full"):

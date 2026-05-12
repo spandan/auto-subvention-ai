@@ -127,14 +127,14 @@ def render_wizard(
             b_back = ui.button("Back", on_click=back).props("flat dense no-caps")
             b_back.set_enabled(step > 0)
             if step < len(_STEPS) - 1:
-                ui.button("Next", on_click=nxt).props("unelevated dense no-caps").style(
-                    "background:#334155;color:white;"
+                ui.button("Next", on_click=nxt).props("unelevated dense no-caps").classes(
+                    "btn-cta btn-cta--slate"
                 )
             else:
                 with ui.row().classes("items-center gap-2 flex-wrap"):
                     run_btn = ui.button("Run Optimization", on_click=run_analysis).props(
                         "unelevated dense no-caps"
-                    ).style("background:#166534;color:white;")
+                    ).classes("btn-cta btn-cta--dealer")
                     run_btn.set_enabled(not optimization_running)
                     if optimization_running:
                         ui.label("Optimization running…").classes("text-xs").style(
@@ -799,3 +799,26 @@ def _step_macro(state: dict[str, Any], redraw: Callable[[], None]) -> None:
                 state=state,
                 key="sb_state",
             )
+
+
+# --- OEM wizard re-use: same field renderers as dealer steps (no duplicate business logic) ---
+
+
+def render_dealer_step_vehicle(state: dict[str, Any], redraw: Callable[[], None]) -> None:
+    _step_vehicle(state, redraw)
+
+
+def render_dealer_step_dealer_inv(state: dict[str, Any], redraw: Callable[[], None]) -> None:
+    _step_dealer(state, redraw)
+
+
+def render_dealer_step_financing(state: dict[str, Any], redraw: Callable[[], None]) -> None:
+    _step_financing(state, redraw)
+
+
+def render_dealer_step_competitor(state: dict[str, Any], redraw: Callable[[], None]) -> None:
+    _step_competitor(state, redraw)
+
+
+def render_dealer_step_macro(state: dict[str, Any], redraw: Callable[[], None]) -> None:
+    _step_macro(state, redraw)

@@ -182,6 +182,19 @@ def session_defaults_from_demo(now: datetime | None = None) -> dict[str, Any]:
         "sb_allowed_loan_terms": list(d["allowed_loan_terms"]),
         "sb_rate_support_step": int(d["rate_support_step"]),
         "sb_cash_support_step": int(d["cash_support_step"]),
+        # App shell: landing → workflow; optimization_mode selects dealer vs OEM planning UI.
+        "ui_mode": "landing",
+        "optimization_mode": "dealer",
+        "oem_wizard_step": 0,
+        "oem_archetype": "Prime Family Buyer",
+        "oem_use_mix": "No",
+        "oem_prime_pct": 60.0,
+        "oem_near_prime_pct": 30.0,
+        "oem_subprime_pct": 10.0,
+        "oem_target_sales_volume": float(d["avg_monthly_retail_units"]),
+        "oem_inventory_reduction_target_pct": 8.0,
+        "oem_market_share_target_pct": 11.0,
+        "oem_regional_demand_ui": 6,
         # Dashboard: full scenario grid table is heavy; default shows top curated rows only.
         "dashboard_show_all_scenarios": False,
     }
@@ -524,6 +537,9 @@ def business_dti_ratio(state: dict[str, Any]) -> float:
 
 def build_business_inputs(state: dict[str, Any]) -> dict[str, Any]:
     """Assemble unified context dict for the model (baseline before optimization levers)."""
+    from services.oem_synthetic_profile import apply_oem_synthetic_profile
+
+    apply_oem_synthetic_profile(state)
     ps = score_1_10_to_model(int(state["sb_price_sensitivity_ui"]))
     urg = score_1_10_to_model(int(state["sb_purchase_urgency_ui"]))
     brand = score_1_10_to_model(int(state["sb_brand_preference_ui"]))

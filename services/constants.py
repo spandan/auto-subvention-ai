@@ -165,3 +165,31 @@ WIZARD_STEP_TITLE: dict[str, str] = {
     "competitor": "Competitor & Market",
     "macro": "Financial Market Conditions",
 }
+
+# OEM wizard (six steps) — maps to shared ``sb_*`` state; synthetic buyer fills customer fields.
+OEM_WIZARD_STEPS: tuple[str, ...] = (
+    "oem_buyer",
+    "oem_vehicle",
+    "oem_dealer_inv",
+    "oem_market",
+    "oem_competitor",
+    "oem_financing",
+)
+
+OEM_WIZARD_STEP_TITLE: dict[str, str] = {
+    "oem_buyer": "Target Buyer Profile",
+    "oem_vehicle": "Vehicle & Product Strategy",
+    "oem_dealer_inv": "Dealer & Inventory Conditions",
+    "oem_market": "Regional / Market Conditions",
+    "oem_competitor": "Competitor Environment",
+    "oem_financing": "Optimization Constraints",
+}
+
+OEM_EDIT_SECTION_LABELS: dict[str, str] = {
+    "oem_buyer": "Target buyer assumptions",
+    "oem_vehicle": "Vehicle & product strategy",
+    "oem_dealer_inv": "Dealer & inventory",
+    "oem_market": "Market conditions",
+    "oem_competitor": "Competitor environment",
+    "oem_financing": "Optimization constraints",
+}

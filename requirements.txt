@@ -1,10 +1,17 @@
 # Single-process NiceGUI app + sklearn pickle compatibility.
 #
-# Python 3.13: use pandas>=2.2.3 and numpy 2.x for wheels.
 # model_pipeline.pkl targets scikit-learn 1.6.x — keep <1.7 for pickle safety.
+#
+# NumPy 2.x + Anaconda: conda’s optional pandas deps (numexpr, bottleneck) are often still
+# built against NumPy 1.x → "AttributeError: _ARRAY_API not found" / "compiled using NumPy 1.x".
+# Pin NumPy 1.26 for a stable ABI with pandas 2.2, scipy, sklearn, and LightGBM on conda/pip.
+#
+# Python 3.13: prefer a fresh venv; if you must use NumPy 2, also upgrade numexpr and Bottleneck
+# (e.g. numexpr>=2.10.2, Bottleneck>=1.4.0) so they match NumPy 2 wheels.
 nicegui>=2.0.0
 pandas==2.2.3
-numpy==2.2.6
+numpy==1.26.4
+scipy>=1.11.4,<1.15
 scikit-learn==1.6.1
 lightgbm==4.5.0
 joblib==1.4.2
